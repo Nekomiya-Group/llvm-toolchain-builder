@@ -48,7 +48,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Free disk space
         run: |
@@ -111,7 +111,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Free disk space
         run: |
@@ -188,7 +188,7 @@ jobs:
             git ca-certificates curl file patchelf xz-utils libc6-dev
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Free disk space
         run: |
@@ -257,7 +257,7 @@ jobs:
             git ca-certificates curl file patchelf xz-utils libc6-dev
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Free disk space
         run: |
@@ -327,7 +327,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Download main toolchain
         uses: actions/download-artifact@v4
@@ -373,7 +373,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Download p2996 toolchain
         uses: actions/download-artifact@v4
