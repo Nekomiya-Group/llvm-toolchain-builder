@@ -1,4 +1,8 @@
 name: Build LLVM Toolchain (Ubuntu 16.04)
+# Architecture: actions/* steps (checkout, cache, artifact) run on the runner
+# host (ubuntu-latest, glibc 2.35+). All compilation runs inside ubuntu:16.04
+# via `docker run` with bind mounts — this avoids the Node.js 20 / glibc 2.28
+# incompatibility that blocks actions/* inside a 16.04 container.
 
 on:
   workflow_dispatch:
@@ -25,8 +29,8 @@ env:
   BOOTSTRAP_PREFIX: /opt/bootstrap
   STAGE1_PREFIX: /opt/stage1
   LLVM_VERSION: ${{ github.event.inputs.llvm_version || '21.1.1' }}
+  IMAGE: ubuntu:16.04
 
-# Cancel in-progress runs for the same branch
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -38,57 +42,53 @@ jobs:
   bootstrap:
     name: Bootstrap Tools
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:16.04
     timeout-minutes: 180
     steps:
-      - name: Install git (build from source if needed)
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates curl make gcc libssl-dev libcurl4-openssl-dev \
-            libexpat1-dev gettext zlib1g-dev autoconf
-          GIT_VER=2.47.2
-          curl -fsSL "https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VER}.tar.gz" -o /tmp/git.tar.gz
-          tar xzf /tmp/git.tar.gz -C /tmp
-          make -C "/tmp/git-${GIT_VER}" prefix=/usr/local -j$(nproc) NO_TCLTK=1 NO_PERL=1 all
-          make -C "/tmp/git-${GIT_VER}" prefix=/usr/local NO_TCLTK=1 NO_PERL=1 install
-          rm -rf "/tmp/git-${GIT_VER}" /tmp/git.tar.gz
-          git --version
-
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Free disk space
         run: |
           df -h /
-          rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghcli || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghcli /opt/hostedtoolcache || true
           df -h /
+
+      - name: Pull container image
+        run: docker pull ${{ env.IMAGE }}
 
       - name: Cache bootstrap
         id: cache-bootstrap
         uses: actions/cache@v4
         with:
           path: /opt/bootstrap
-          key: bootstrap-v6-gcc14.2-cmake3.31-py3.12-${{ hashFiles('scripts/bootstrap.sh') }}
+          key: bootstrap-v7-gcc14.2-cmake3.31-py3.12-${{ hashFiles('scripts/bootstrap.sh') }}
           restore-keys: |
-            bootstrap-v6-gcc14.2-cmake3.31-py3.12-
+            bootstrap-v7-gcc14.2-cmake3.31-py3.12-
 
       - name: Build bootstrap tools
         if: steps.cache-bootstrap.outputs.cache-hit != 'true'
         run: |
-          chmod +x scripts/bootstrap.sh
-          bash scripts/bootstrap.sh
+          docker run --rm \
+            -v ${{ github.workspace }}:/src:ro \
+            -v /opt/bootstrap:/opt/bootstrap \
+            -e BOOTSTRAP_PREFIX=/opt/bootstrap \
+            ${{ env.IMAGE }} \
+            bash -c "chmod +x /src/scripts/bootstrap.sh && /src/scripts/bootstrap.sh"
 
       - name: Verify bootstrap
         run: |
-          export PATH="/opt/bootstrap/bin:${PATH}"
-          export LD_LIBRARY_PATH="/opt/bootstrap/lib64:/opt/bootstrap/lib"
-          gcc --version | head -1
-          cmake --version | head -1
-          ninja --version
-          python3 --version
-          swig -version | grep "SWIG Version"
+          docker run --rm \
+            -v /opt/bootstrap:/opt/bootstrap:ro \
+            ${{ env.IMAGE }} \
+            bash -c '
+              export PATH="/opt/bootstrap/bin:${PATH}"
+              export LD_LIBRARY_PATH="/opt/bootstrap/lib64:/opt/bootstrap/lib"
+              gcc --version | head -1
+              cmake --version | head -1
+              ninja --version
+              python3 --version
+              swig -version | grep "SWIG Version"
+            '
 
       - name: Package bootstrap for artifact
         run: |
@@ -110,31 +110,18 @@ jobs:
     name: LLVM Stage 1
     needs: bootstrap
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:16.04
     timeout-minutes: 120
     steps:
-      - name: Install git (build from source if needed)
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates curl make gcc libssl-dev libcurl4-openssl-dev \
-            libexpat1-dev gettext zlib1g-dev autoconf
-          GIT_VER=2.47.2
-          curl -fsSL "https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VER}.tar.gz" -o /tmp/git.tar.gz
-          tar xzf /tmp/git.tar.gz -C /tmp
-          make -C "/tmp/git-${GIT_VER}" prefix=/usr/local -j$(nproc) NO_TCLTK=1 NO_PERL=1 all
-          make -C "/tmp/git-${GIT_VER}" prefix=/usr/local NO_TCLTK=1 NO_PERL=1 install
-          rm -rf "/tmp/git-${GIT_VER}" /tmp/git.tar.gz
-          git --version
-
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Free disk space
         run: |
-          rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghcli || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghcli /opt/hostedtoolcache || true
           df -h /
+
+      - name: Pull container image
+        run: docker pull ${{ env.IMAGE }}
 
       - name: Download bootstrap tools
         uses: actions/download-artifact@v4
@@ -144,16 +131,10 @@ jobs:
 
       - name: Extract bootstrap tools
         run: |
+          sudo mkdir -p /opt/bootstrap
           cd /opt
-          tar xf /tmp/artifacts/bootstrap-tools.tar
+          sudo tar xf /tmp/artifacts/bootstrap-tools.tar
           rm -rf /tmp/artifacts
-          chmod -R +x /opt/bootstrap/bin/
-
-      - name: Install system deps
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            curl file patchelf xz-utils
 
       - name: Cache LLVM source
         id: cache-llvm-src
@@ -164,16 +145,36 @@ jobs:
 
       - name: Build LLVM Stage 1
         run: |
-          export PATH="/opt/bootstrap/bin:${PATH}"
-          export LD_LIBRARY_PATH="/opt/bootstrap/lib64:/opt/bootstrap/lib"
-          chmod +x scripts/build-llvm-stage1.sh
-          bash scripts/build-llvm-stage1.sh
+          docker run --rm \
+            -v ${{ github.workspace }}:/src:ro \
+            -v /opt/bootstrap:/opt/bootstrap:ro \
+            -v /opt/stage1:/opt/stage1 \
+            -v /tmp:/tmp \
+            -e BOOTSTRAP_PREFIX=/opt/bootstrap \
+            -e STAGE1_PREFIX=/opt/stage1 \
+            -e LLVM_VERSION=${{ env.LLVM_VERSION }} \
+            ${{ env.IMAGE }} \
+            bash -c '
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates curl file patchelf xz-utils
+              export PATH="/opt/bootstrap/bin:${PATH}"
+              export LD_LIBRARY_PATH="/opt/bootstrap/lib64:/opt/bootstrap/lib"
+              chmod +x /src/scripts/build-llvm-stage1.sh
+              bash /src/scripts/build-llvm-stage1.sh
+            '
 
       - name: Verify Stage 1
         run: |
-          export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
-          /opt/stage1/bin/clang --version
-          /opt/stage1/bin/ld.lld --version
+          docker run --rm \
+            -v /opt/stage1:/opt/stage1:ro \
+            -v /opt/bootstrap:/opt/bootstrap:ro \
+            ${{ env.IMAGE }} \
+            bash -c '
+              export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
+              /opt/stage1/bin/clang --version
+              /opt/stage1/bin/ld.lld --version
+            '
 
       - name: Package Stage 1 for artifact
         run: |
@@ -195,31 +196,18 @@ jobs:
     name: LLVM Stage 2 (main)
     needs: [bootstrap, stage1]
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:16.04
     timeout-minutes: 300
     steps:
-      - name: Install git + deps (build git from source if needed)
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates curl file patchelf xz-utils libc6-dev \
-            make gcc libssl-dev libcurl4-openssl-dev libexpat1-dev gettext zlib1g-dev autoconf
-          GIT_VER=2.47.2
-          curl -fsSL "https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VER}.tar.gz" -o /tmp/git.tar.gz
-          tar xzf /tmp/git.tar.gz -C /tmp
-          make -C "/tmp/git-${GIT_VER}" prefix=/usr/local -j$(nproc) NO_TCLTK=1 NO_PERL=1 all
-          make -C "/tmp/git-${GIT_VER}" prefix=/usr/local NO_TCLTK=1 NO_PERL=1 install
-          rm -rf "/tmp/git-${GIT_VER}" /tmp/git.tar.gz
-          git --version
-
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Free disk space
         run: |
-          rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghcli || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghcli /opt/hostedtoolcache || true
           df -h /
+
+      - name: Pull container image
+        run: docker pull ${{ env.IMAGE }}
 
       - name: Download bootstrap tools
         uses: actions/download-artifact@v4
@@ -233,13 +221,13 @@ jobs:
           name: stage1-install
           path: /tmp/artifacts-s1
 
-      - name: Extract & fix permissions
+      - name: Extract artifacts
         run: |
+          sudo mkdir -p /opt/bootstrap /opt/stage1
           cd /opt
-          tar xf /tmp/artifacts/bootstrap-tools.tar
-          tar xf /tmp/artifacts-s1/stage1-install.tar
+          sudo tar xf /tmp/artifacts/bootstrap-tools.tar
+          sudo tar xf /tmp/artifacts-s1/stage1-install.tar
           rm -rf /tmp/artifacts /tmp/artifacts-s1
-          chmod -R +x /opt/bootstrap/bin/ /opt/stage1/bin/
 
       - name: Cache LLVM source
         uses: actions/cache@v4
@@ -248,14 +236,27 @@ jobs:
           key: llvm-src-${{ env.LLVM_VERSION }}
 
       - name: Build LLVM Stage 2 (main)
-        env:
-          VARIANT: main
-          INSTALL_PREFIX: /opt/coca-toolchain
         run: |
-          export PATH="/opt/stage1/bin:/opt/bootstrap/bin:${PATH}"
-          export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
-          chmod +x scripts/build-llvm-stage2.sh
-          bash scripts/build-llvm-stage2.sh
+          docker run --rm \
+            -v ${{ github.workspace }}:/src:ro \
+            -v /opt/bootstrap:/opt/bootstrap:ro \
+            -v /opt/stage1:/opt/stage1:ro \
+            -v /tmp:/tmp \
+            -e BOOTSTRAP_PREFIX=/opt/bootstrap \
+            -e STAGE1_PREFIX=/opt/stage1 \
+            -e LLVM_VERSION=${{ env.LLVM_VERSION }} \
+            -e VARIANT=main \
+            -e INSTALL_PREFIX=/opt/coca-toolchain \
+            ${{ env.IMAGE }} \
+            bash -c '
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates curl file patchelf xz-utils libc6-dev
+              export PATH="/opt/stage1/bin:/opt/bootstrap/bin:${PATH}"
+              export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
+              chmod +x /src/scripts/build-llvm-stage2.sh
+              bash /src/scripts/build-llvm-stage2.sh
+            '
 
       - name: Upload main toolchain
         uses: actions/upload-artifact@v4
@@ -272,31 +273,18 @@ jobs:
     needs: [bootstrap, stage1]
     if: ${{ github.event.inputs.build_p2996 != 'false' }}
     runs-on: ubuntu-latest
-    container:
-      image: ubuntu:16.04
     timeout-minutes: 300
     steps:
-      - name: Install git + deps (build git from source if needed)
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            ca-certificates curl file patchelf xz-utils libc6-dev \
-            make gcc libssl-dev libcurl4-openssl-dev libexpat1-dev gettext zlib1g-dev autoconf
-          GIT_VER=2.47.2
-          curl -fsSL "https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VER}.tar.gz" -o /tmp/git.tar.gz
-          tar xzf /tmp/git.tar.gz -C /tmp
-          make -C "/tmp/git-${GIT_VER}" prefix=/usr/local -j$(nproc) NO_TCLTK=1 NO_PERL=1 all
-          make -C "/tmp/git-${GIT_VER}" prefix=/usr/local NO_TCLTK=1 NO_PERL=1 install
-          rm -rf "/tmp/git-${GIT_VER}" /tmp/git.tar.gz
-          git --version
-
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Free disk space
         run: |
-          rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghcli || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghcli /opt/hostedtoolcache || true
           df -h /
+
+      - name: Pull container image
+        run: docker pull ${{ env.IMAGE }}
 
       - name: Download bootstrap tools
         uses: actions/download-artifact@v4
@@ -310,23 +298,36 @@ jobs:
           name: stage1-install
           path: /tmp/artifacts-s1
 
-      - name: Extract & fix permissions
+      - name: Extract artifacts
         run: |
+          sudo mkdir -p /opt/bootstrap /opt/stage1
           cd /opt
-          tar xf /tmp/artifacts/bootstrap-tools.tar
-          tar xf /tmp/artifacts-s1/stage1-install.tar
+          sudo tar xf /tmp/artifacts/bootstrap-tools.tar
+          sudo tar xf /tmp/artifacts-s1/stage1-install.tar
           rm -rf /tmp/artifacts /tmp/artifacts-s1
-          chmod -R +x /opt/bootstrap/bin/ /opt/stage1/bin/
 
       - name: Build LLVM Stage 2 (p2996)
-        env:
-          VARIANT: p2996
-          INSTALL_PREFIX: /opt/coca-toolchain-p2996
         run: |
-          export PATH="/opt/stage1/bin:/opt/bootstrap/bin:${PATH}"
-          export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
-          chmod +x scripts/build-llvm-stage2.sh
-          bash scripts/build-llvm-stage2.sh
+          docker run --rm \
+            -v ${{ github.workspace }}:/src:ro \
+            -v /opt/bootstrap:/opt/bootstrap:ro \
+            -v /opt/stage1:/opt/stage1:ro \
+            -v /tmp:/tmp \
+            -e BOOTSTRAP_PREFIX=/opt/bootstrap \
+            -e STAGE1_PREFIX=/opt/stage1 \
+            -e LLVM_VERSION=${{ env.LLVM_VERSION }} \
+            -e VARIANT=p2996 \
+            -e INSTALL_PREFIX=/opt/coca-toolchain-p2996 \
+            ${{ env.IMAGE }} \
+            bash -c '
+              apt-get update -qq
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates curl file patchelf xz-utils libc6-dev
+              export PATH="/opt/stage1/bin:/opt/bootstrap/bin:${PATH}"
+              export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
+              chmod +x /src/scripts/build-llvm-stage2.sh
+              bash /src/scripts/build-llvm-stage2.sh
+            '
 
       - name: Upload p2996 toolchain
         uses: actions/upload-artifact@v4
@@ -351,30 +352,10 @@ jobs:
           - ubuntu:20.04
           - ubuntu:22.04
           - ubuntu:24.04
-    container:
-      image: ${{ matrix.distro }}
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
-      - name: Ensure git >= 2.18 (build from source on old distros)
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            git ca-certificates curl make gcc libssl-dev libcurl4-openssl-dev \
-            libexpat1-dev gettext zlib1g-dev autoconf
-          GIT_MINOR=$(git --version | grep -oP '\d+\.\K\d+')
-          if [ "${GIT_MINOR:-0}" -lt 18 ]; then
-            echo "System git too old, building 2.47.2 from source..."
-            GIT_VER=2.47.2
-            curl -fsSL "https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VER}.tar.gz" -o /tmp/git.tar.gz
-            tar xzf /tmp/git.tar.gz -C /tmp
-            make -C "/tmp/git-${GIT_VER}" prefix=/usr/local -j$(nproc) NO_TCLTK=1 NO_PERL=1 all
-            make -C "/tmp/git-${GIT_VER}" prefix=/usr/local NO_TCLTK=1 NO_PERL=1 install
-            rm -rf "/tmp/git-${GIT_VER}" /tmp/git.tar.gz
-          fi
-          git --version
-
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Download main toolchain
         uses: actions/download-artifact@v4
@@ -384,16 +365,21 @@ jobs:
 
       - name: Extract toolchain
         run: |
-          mkdir -p /opt
+          sudo mkdir -p /opt
           cd /opt
-          tar xf /tmp/coca-toolchain-linux-x86_64.tar.xz
+          sudo tar xf /tmp/coca-toolchain-linux-x86_64.tar.xz
 
-      - name: Run portability tests
-        env:
-          TOOLCHAIN_DIR: /opt/coca-toolchain-linux-x86_64
+      - name: Run portability tests in container
         run: |
-          chmod +x scripts/verify-portability.sh
-          bash scripts/verify-portability.sh
+          docker run --rm \
+            -v ${{ github.workspace }}:/src:ro \
+            -v /opt:/opt:ro \
+            -e TOOLCHAIN_DIR=/opt/coca-toolchain-linux-x86_64 \
+            ${{ matrix.distro }} \
+            bash -c '
+              chmod +x /src/scripts/verify-portability.sh
+              bash /src/scripts/verify-portability.sh
+            '
 
   # ===========================================================================
   # Job 6: Verify p2996 variant portability
@@ -410,30 +396,10 @@ jobs:
           - ubuntu:16.04
           - ubuntu:20.04
           - ubuntu:24.04
-    container:
-      image: ${{ matrix.distro }}
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
-      - name: Ensure git >= 2.18 (build from source on old distros)
-        run: |
-          apt-get update -qq
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            git ca-certificates curl make gcc libssl-dev libcurl4-openssl-dev \
-            libexpat1-dev gettext zlib1g-dev autoconf
-          GIT_MINOR=$(git --version | grep -oP '\d+\.\K\d+')
-          if [ "${GIT_MINOR:-0}" -lt 18 ]; then
-            echo "System git too old, building 2.47.2 from source..."
-            GIT_VER=2.47.2
-            curl -fsSL "https://mirrors.edge.kernel.org/pub/software/scm/git/git-${GIT_VER}.tar.gz" -o /tmp/git.tar.gz
-            tar xzf /tmp/git.tar.gz -C /tmp
-            make -C "/tmp/git-${GIT_VER}" prefix=/usr/local -j$(nproc) NO_TCLTK=1 NO_PERL=1 all
-            make -C "/tmp/git-${GIT_VER}" prefix=/usr/local NO_TCLTK=1 NO_PERL=1 install
-            rm -rf "/tmp/git-${GIT_VER}" /tmp/git.tar.gz
-          fi
-          git --version
-
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Download p2996 toolchain
         uses: actions/download-artifact@v4
@@ -443,13 +409,18 @@ jobs:
 
       - name: Extract toolchain
         run: |
-          mkdir -p /opt
+          sudo mkdir -p /opt
           cd /opt
-          tar xf /tmp/coca-toolchain-p2996-linux-x86_64.tar.xz
+          sudo tar xf /tmp/coca-toolchain-p2996-linux-x86_64.tar.xz
 
-      - name: Run portability tests
-        env:
-          TOOLCHAIN_DIR: /opt/coca-toolchain-p2996-linux-x86_64
+      - name: Run portability tests in container
         run: |
-          chmod +x scripts/verify-portability.sh
-          bash scripts/verify-portability.sh
+          docker run --rm \
+            -v ${{ github.workspace }}:/src:ro \
+            -v /opt:/opt:ro \
+            -e TOOLCHAIN_DIR=/opt/coca-toolchain-p2996-linux-x86_64 \
+            ${{ matrix.distro }} \
+            bash -c '
+              chmod +x /src/scripts/verify-portability.sh
+              bash /src/scripts/verify-portability.sh
+            '
