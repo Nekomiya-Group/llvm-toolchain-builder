@@ -96,6 +96,19 @@ function Invoke-VsDevShell {
     # Detect MSVC version for log
     $clExe = Get-Command cl.exe -ErrorAction SilentlyContinue
     if ($clExe) { Log "cl.exe: $($clExe.Source)" }
+
+    # Resolve lib.exe to absolute path (used for CMAKE_AR)
+    $libExe = Get-Command lib.exe -ErrorAction SilentlyContinue
+    if (-not $libExe) { throw "lib.exe not found after vcvarsall.bat" }
+    $script:MSVC_LIB_EXE = $libExe.Source
+    Log "lib.exe: $($script:MSVC_LIB_EXE)"
+
+    # Resolve link.exe to absolute path (used for CMAKE_LINKER fallback)
+    $linkExe = Get-Command link.exe -ErrorAction SilentlyContinue
+    if ($linkExe) {
+        $script:MSVC_LINK_EXE = $linkExe.Source
+        Log "link.exe: $($script:MSVC_LINK_EXE)"
+    }
 }
 
 # ── 1. Obtain source code ────────────────────────────────────────────────────
@@ -141,8 +154,8 @@ function Get-LLVMSource {
             if (Test-Path (Join-Path $P2996_SRC 'llvm')) {
                 Log "Using existing p2996 source at $P2996_SRC"
             } else {
-                Log "Cloning Bloomberg clang-p2996..."
-                $null = & git clone --depth 1 --branch p2996 "https://github.com/bloomberg/clang-p2996.git" $P2996_SRC 2>&1
+                Log "Cloning clang-p2996 (fork with LLDB fix)..."
+                $null = & git clone --depth 1 --branch p2996 "https://github.com/nekomiya-kasane/clang-p2996.git" $P2996_SRC 2>&1
                 if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
             }
             return $P2996_SRC
@@ -220,7 +233,7 @@ function Build-LLVM {
         # Use clang-cl from the runner's LLVM 20 if available, otherwise MSVC cl.exe
         "-DCMAKE_C_COMPILER=cl.exe",
         "-DCMAKE_CXX_COMPILER=cl.exe",
-        "-DCMAKE_AR=lib.exe",
+        "-DCMAKE_AR=$script:MSVC_LIB_EXE",
         "-DLLVM_USE_LINKER=lld",
         "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL",
         # Projects

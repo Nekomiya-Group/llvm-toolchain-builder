@@ -22,7 +22,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'scripts/*.sh'
+      - 'scripts/ubuntu-16.04/**'
       - '.github/workflows/build-toolchain.yml'
 
 env:
@@ -61,7 +61,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/bootstrap
-          key: bootstrap-v7-gcc14.2-cmake3.31-py3.12-${{ hashFiles('scripts/bootstrap.sh') }}
+          key: bootstrap-v7-gcc14.2-cmake3.31-py3.12-${{ hashFiles('scripts/ubuntu-16.04/bootstrap.sh') }}
           restore-keys: |
             bootstrap-v7-gcc14.2-cmake3.31-py3.12-
 
@@ -73,7 +73,7 @@ jobs:
             -v /opt/bootstrap:/opt/bootstrap \
             -e BOOTSTRAP_PREFIX=/opt/bootstrap \
             ${{ env.IMAGE }} \
-            bash /src/scripts/bootstrap.sh
+            bash /src/scripts/ubuntu-16.04/bootstrap.sh
 
       - name: Verify bootstrap
         run: |
@@ -160,7 +160,7 @@ jobs:
                 ca-certificates curl file patchelf xz-utils
               export PATH="/opt/bootstrap/bin:${PATH}"
               export LD_LIBRARY_PATH="/opt/bootstrap/lib64:/opt/bootstrap/lib"
-              bash /src/scripts/build-llvm-stage1.sh
+              bash /src/scripts/ubuntu-16.04/build-llvm-stage1.sh
             '
 
       - name: Verify Stage 1
@@ -253,7 +253,7 @@ jobs:
                 ca-certificates curl file patchelf xz-utils libc6-dev
               export PATH="/opt/stage1/bin:/opt/bootstrap/bin:${PATH}"
               export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
-              bash /src/scripts/build-llvm-stage2.sh
+              bash /src/scripts/ubuntu-16.04/build-llvm-stage2.sh
             '
 
       - name: Upload main toolchain
@@ -323,7 +323,7 @@ jobs:
                 ca-certificates curl file patchelf xz-utils libc6-dev
               export PATH="/opt/stage1/bin:/opt/bootstrap/bin:${PATH}"
               export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
-              bash /src/scripts/build-llvm-stage2.sh
+              bash /src/scripts/ubuntu-16.04/build-llvm-stage2.sh
             '
 
       - name: Upload p2996 toolchain
@@ -374,7 +374,7 @@ jobs:
             -e TOOLCHAIN_DIR=/opt/coca-toolchain-linux-x86_64 \
             ${{ matrix.distro }} \
             bash -c '
-              bash /src/scripts/verify-portability.sh
+              bash /src/scripts/ubuntu-16.04/verify-portability.sh
             '
 
   # ===========================================================================
@@ -417,5 +417,5 @@ jobs:
             -e TOOLCHAIN_DIR=/opt/coca-toolchain-p2996-linux-x86_64 \
             ${{ matrix.distro }} \
             bash -c '
-              bash /src/scripts/verify-portability.sh
+              bash /src/scripts/ubuntu-16.04/verify-portability.sh
             '
