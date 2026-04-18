@@ -119,14 +119,21 @@ function Get-LLVMSource {
                 # Use cmd /c to run the 7z pipe — in PowerShell, unhandled stdout
                 # from external commands becomes part of the function return value.
                 # cmd /c keeps the pipe internal and only returns the exit code.
-                $null = cmd /c "7z x `"$tarball`" -so 2>nul | 7z x -aoa -si -ttar `"-o$LLVM_SRC`" -y >nul"
-                if ($LASTEXITCODE -ne 0) { throw "7z extraction failed (exit code $LASTEXITCODE)" }
-                # Move contents up from nested dir
+                # NOTE: 7z returns exit code 2 ("Sub items Errors") because the LLVM
+                # tarball contains Unix symlinks (test inputs) that can't be created
+                # on Windows. This is harmless — we verify by checking for key dirs.
+                $null = cmd /c "7z x `"$tarball`" -so 2>nul | 7z x -aoa -si -ttar `"-o$LLVM_SRC`" -y >nul 2>nul"
+                # Move contents up from nested dir (tarball root is llvm-project-X.Y.Z.src/)
                 $nested = Get-ChildItem $LLVM_SRC -Directory | Where-Object { $_.Name -like 'llvm-project-*' } | Select-Object -First 1
                 if ($nested) {
                     Get-ChildItem $nested.FullName | Move-Item -Destination $LLVM_SRC -Force
                     Remove-Item $nested.FullName -Recurse -Force -ErrorAction SilentlyContinue
                 }
+                # Verify extraction succeeded
+                if (-not (Test-Path (Join-Path $LLVM_SRC 'llvm\CMakeLists.txt'))) {
+                    throw "LLVM source extraction failed — llvm/CMakeLists.txt not found in $LLVM_SRC"
+                }
+                Log "LLVM source extracted to $LLVM_SRC"
             }
             return $LLVM_SRC
         }
