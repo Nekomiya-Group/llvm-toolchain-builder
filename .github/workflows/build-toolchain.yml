@@ -22,7 +22,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'scripts/**'
+      - 'scripts/*.sh'
       - '.github/workflows/build-toolchain.yml'
 
 env:
