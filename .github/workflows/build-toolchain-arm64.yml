@@ -1,8 +1,7 @@
-name: Build LLVM Toolchain (Ubuntu 16.04)
-# Architecture: actions/* steps (checkout, cache, artifact) run on the runner
-# host (ubuntu-latest, glibc 2.35+). All compilation runs inside ubuntu:16.04
-# via `docker run` with bind mounts — this avoids the Node.js 20 / glibc 2.28
-# incompatibility that blocks actions/* inside a 16.04 container.
+name: Build LLVM Toolchain (Linux ARM64)
+# Architecture: Uses GitHub's free ARM64 runners (ubuntu-24.04-arm).
+# All compilation runs inside ubuntu:16.04 ARM64 Docker container
+# to produce glibc-2.23 compatible binaries.
 
 on:
   workflow_dispatch:
@@ -24,15 +23,14 @@ on:
     paths:
       - 'scripts/common/**'
       - 'scripts/bootstrap/**'
-      - 'scripts/linux-x64/**'
-      - 'scripts/ubuntu-16.04/**'
-      - '.github/workflows/build-toolchain.yml'
+      - 'scripts/linux-arm64/**'
+      - '.github/workflows/build-toolchain-arm64.yml'
 
 env:
   BOOTSTRAP_PREFIX: /opt/bootstrap
   STAGE1_PREFIX: /opt/stage1
   LLVM_VERSION: ${{ github.event.inputs.llvm_version || '21.1.1' }}
-  IMAGE: ubuntu:16.04
+  IMAGE: arm64v8/ubuntu:16.04
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -43,8 +41,8 @@ jobs:
   # Job 1: Bootstrap — build GCC, CMake, Python, Ninja, SWIG, and dependencies
   # ===========================================================================
   bootstrap:
-    name: Bootstrap Tools
-    runs-on: ubuntu-latest
+    name: Bootstrap Tools (ARM64)
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 540
     steps:
       - name: Checkout
@@ -56,6 +54,9 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghcli /opt/hostedtoolcache || true
           df -h /
 
+      - name: Set up QEMU (for multi-arch Docker)
+        uses: docker/setup-qemu-action@v3
+
       - name: Pull container image
         run: docker pull ${{ env.IMAGE }}
 
@@ -64,9 +65,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/bootstrap
-          key: bootstrap-v8-${{ hashFiles('scripts/bootstrap/common-bootstrap.sh', 'scripts/bootstrap/ubuntu-16.04.sh', 'scripts/common/versions.sh') }}
+          key: bootstrap-arm64-v1-${{ hashFiles('scripts/bootstrap/common-bootstrap.sh', 'scripts/bootstrap/ubuntu-16.04.sh', 'scripts/common/versions.sh') }}
           restore-keys: |
-            bootstrap-v8-
+            bootstrap-arm64-v1-
 
       - name: Build bootstrap tools
         if: steps.cache-bootstrap.outputs.cache-hit != 'true'
@@ -96,13 +97,13 @@ jobs:
       - name: Package bootstrap for artifact
         run: |
           cd /opt
-          tar cf /tmp/bootstrap-tools.tar bootstrap/
+          tar cf /tmp/bootstrap-tools-arm64.tar bootstrap/
 
       - name: Upload bootstrap artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bootstrap-tools
-          path: /tmp/bootstrap-tools.tar
+          name: bootstrap-tools-arm64
+          path: /tmp/bootstrap-tools-arm64.tar
           retention-days: 3
           compression-level: 1
 
@@ -110,9 +111,9 @@ jobs:
   # Job 2: LLVM Stage 1 — minimal clang + lld using bootstrap GCC
   # ===========================================================================
   stage1:
-    name: LLVM Stage 1
+    name: LLVM Stage 1 (ARM64)
     needs: bootstrap
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 540
     steps:
       - name: Checkout
@@ -129,14 +130,14 @@ jobs:
       - name: Download bootstrap tools
         uses: actions/download-artifact@v4
         with:
-          name: bootstrap-tools
+          name: bootstrap-tools-arm64
           path: /tmp/artifacts
 
       - name: Extract bootstrap tools
         run: |
           sudo mkdir -p /opt/bootstrap
           cd /opt
-          sudo tar xf /tmp/artifacts/bootstrap-tools.tar
+          sudo tar xf /tmp/artifacts/bootstrap-tools-arm64.tar
           rm -rf /tmp/artifacts
 
       - name: Cache LLVM source
@@ -144,7 +145,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/llvm-project
-          key: llvm-src-${{ env.LLVM_VERSION }}
+          key: llvm-src-arm64-${{ env.LLVM_VERSION }}
 
       - name: Build LLVM Stage 1
         run: |
@@ -163,7 +164,7 @@ jobs:
                 ca-certificates curl file patchelf xz-utils git
               export PATH="/opt/bootstrap/bin:${PATH}"
               export LD_LIBRARY_PATH="/opt/bootstrap/lib64:/opt/bootstrap/lib"
-              bash /src/scripts/linux-x64/build-llvm-stage1.sh
+              bash /src/scripts/linux-arm64/build-llvm-stage1.sh
             '
 
       - name: Verify Stage 1
@@ -181,13 +182,13 @@ jobs:
       - name: Package Stage 1 for artifact
         run: |
           cd /opt
-          tar cf /tmp/stage1-install.tar stage1/
+          tar cf /tmp/stage1-install-arm64.tar stage1/
 
       - name: Upload Stage 1 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: stage1-install
-          path: /tmp/stage1-install.tar
+          name: stage1-install-arm64
+          path: /tmp/stage1-install-arm64.tar
           retention-days: 1
           compression-level: 1
 
@@ -195,9 +196,9 @@ jobs:
   # Job 3: LLVM Stage 2 — main toolchain (full suite, self-hosted)
   # ===========================================================================
   stage2-main:
-    name: LLVM Stage 2 (main)
+    name: LLVM Stage 2 (main, ARM64)
     needs: [bootstrap, stage1]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 540
     steps:
       - name: Checkout
@@ -214,28 +215,28 @@ jobs:
       - name: Download bootstrap tools
         uses: actions/download-artifact@v4
         with:
-          name: bootstrap-tools
+          name: bootstrap-tools-arm64
           path: /tmp/artifacts
 
       - name: Download Stage 1
         uses: actions/download-artifact@v4
         with:
-          name: stage1-install
+          name: stage1-install-arm64
           path: /tmp/artifacts-s1
 
       - name: Extract artifacts
         run: |
           sudo mkdir -p /opt/bootstrap /opt/stage1
           cd /opt
-          sudo tar xf /tmp/artifacts/bootstrap-tools.tar
-          sudo tar xf /tmp/artifacts-s1/stage1-install.tar
+          sudo tar xf /tmp/artifacts/bootstrap-tools-arm64.tar
+          sudo tar xf /tmp/artifacts-s1/stage1-install-arm64.tar
           rm -rf /tmp/artifacts /tmp/artifacts-s1
 
       - name: Cache LLVM source
         uses: actions/cache@v4
         with:
           path: /tmp/llvm-project
-          key: llvm-src-${{ env.LLVM_VERSION }}
+          key: llvm-src-arm64-${{ env.LLVM_VERSION }}
 
       - name: Build LLVM Stage 2 (main)
         run: |
@@ -256,24 +257,24 @@ jobs:
                 ca-certificates curl file patchelf xz-utils libc6-dev git
               export PATH="/opt/stage1/bin:/opt/bootstrap/bin:${PATH}"
               export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
-              bash /src/scripts/linux-x64/build-llvm-stage2.sh
+              bash /src/scripts/linux-arm64/build-llvm-stage2.sh
             '
 
       - name: Upload main toolchain
         uses: actions/upload-artifact@v4
         with:
-          name: coca-toolchain-linux-x86_64
-          path: /tmp/coca-toolchain-linux-x86_64.tar.xz
+          name: coca-toolchain-linux-aarch64
+          path: /tmp/coca-toolchain-linux-aarch64.tar.xz
           retention-days: 14
 
   # ===========================================================================
   # Job 4: LLVM Stage 2 — p2996 (Bloomberg C++ reflection fork)
   # ===========================================================================
   stage2-p2996:
-    name: LLVM Stage 2 (p2996)
+    name: LLVM Stage 2 (p2996, ARM64)
     needs: [bootstrap, stage1]
     if: ${{ github.event.inputs.build_p2996 != 'false' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 540
     steps:
       - name: Checkout
@@ -290,21 +291,21 @@ jobs:
       - name: Download bootstrap tools
         uses: actions/download-artifact@v4
         with:
-          name: bootstrap-tools
+          name: bootstrap-tools-arm64
           path: /tmp/artifacts
 
       - name: Download Stage 1
         uses: actions/download-artifact@v4
         with:
-          name: stage1-install
+          name: stage1-install-arm64
           path: /tmp/artifacts-s1
 
       - name: Extract artifacts
         run: |
           sudo mkdir -p /opt/bootstrap /opt/stage1
           cd /opt
-          sudo tar xf /tmp/artifacts/bootstrap-tools.tar
-          sudo tar xf /tmp/artifacts-s1/stage1-install.tar
+          sudo tar xf /tmp/artifacts/bootstrap-tools-arm64.tar
+          sudo tar xf /tmp/artifacts-s1/stage1-install-arm64.tar
           rm -rf /tmp/artifacts /tmp/artifacts-s1
 
       - name: Build LLVM Stage 2 (p2996)
@@ -326,32 +327,32 @@ jobs:
                 ca-certificates curl file patchelf xz-utils libc6-dev git
               export PATH="/opt/stage1/bin:/opt/bootstrap/bin:${PATH}"
               export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
-              bash /src/scripts/linux-x64/build-llvm-stage2.sh
+              bash /src/scripts/linux-arm64/build-llvm-stage2.sh
             '
 
       - name: Upload p2996 toolchain
         uses: actions/upload-artifact@v4
         with:
-          name: coca-toolchain-p2996-linux-x86_64
-          path: /tmp/coca-toolchain-p2996-linux-x86_64.tar.xz
+          name: coca-toolchain-p2996-linux-aarch64
+          path: /tmp/coca-toolchain-p2996-linux-aarch64.tar.xz
           retention-days: 14
 
   # ===========================================================================
-  # Job 5: Portability verification on multiple Ubuntu versions
+  # Job 5: Portability verification
   # ===========================================================================
   verify:
-    name: Verify (${{ matrix.distro }})
+    name: Verify ARM64 (${{ matrix.distro }})
     needs: [stage2-main]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
         distro:
-          - ubuntu:16.04
-          - ubuntu:18.04
-          - ubuntu:20.04
-          - ubuntu:22.04
-          - ubuntu:24.04
+          - arm64v8/ubuntu:16.04
+          - arm64v8/ubuntu:18.04
+          - arm64v8/ubuntu:20.04
+          - arm64v8/ubuntu:22.04
+          - arm64v8/ubuntu:24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -360,21 +361,21 @@ jobs:
       - name: Download main toolchain
         uses: actions/download-artifact@v4
         with:
-          name: coca-toolchain-linux-x86_64
+          name: coca-toolchain-linux-aarch64
           path: /tmp
 
       - name: Extract toolchain
         run: |
           sudo mkdir -p /opt
           cd /opt
-          sudo tar xf /tmp/coca-toolchain-linux-x86_64.tar.xz
+          sudo tar xf /tmp/coca-toolchain-linux-aarch64.tar.xz
 
       - name: Run portability tests in container
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/src:ro \
             -v /opt:/opt:ro \
-            -e TOOLCHAIN_DIR=/opt/coca-toolchain-linux-x86_64 \
+            -e TOOLCHAIN_DIR=/opt/coca-toolchain-linux-aarch64 \
             ${{ matrix.distro }} \
             bash -c '
               bash /src/scripts/ubuntu-16.04/verify-portability.sh
@@ -384,17 +385,17 @@ jobs:
   # Job 6: Verify p2996 variant portability
   # ===========================================================================
   verify-p2996:
-    name: Verify p2996 (${{ matrix.distro }})
+    name: Verify p2996 ARM64 (${{ matrix.distro }})
     needs: [stage2-p2996]
     if: ${{ github.event.inputs.build_p2996 != 'false' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
         distro:
-          - ubuntu:16.04
-          - ubuntu:20.04
-          - ubuntu:24.04
+          - arm64v8/ubuntu:16.04
+          - arm64v8/ubuntu:20.04
+          - arm64v8/ubuntu:24.04
     timeout-minutes: 30
     steps:
       - name: Checkout
@@ -403,21 +404,21 @@ jobs:
       - name: Download p2996 toolchain
         uses: actions/download-artifact@v4
         with:
-          name: coca-toolchain-p2996-linux-x86_64
+          name: coca-toolchain-p2996-linux-aarch64
           path: /tmp
 
       - name: Extract toolchain
         run: |
           sudo mkdir -p /opt
           cd /opt
-          sudo tar xf /tmp/coca-toolchain-p2996-linux-x86_64.tar.xz
+          sudo tar xf /tmp/coca-toolchain-p2996-linux-aarch64.tar.xz
 
       - name: Run portability tests in container
         run: |
           docker run --rm \
             -v ${{ github.workspace }}:/src:ro \
             -v /opt:/opt:ro \
-            -e TOOLCHAIN_DIR=/opt/coca-toolchain-p2996-linux-x86_64 \
+            -e TOOLCHAIN_DIR=/opt/coca-toolchain-p2996-linux-aarch64 \
             ${{ matrix.distro }} \
             bash -c '
               bash /src/scripts/ubuntu-16.04/verify-portability.sh

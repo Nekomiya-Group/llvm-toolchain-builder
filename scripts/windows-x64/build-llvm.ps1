@@ -120,33 +120,10 @@ function Get-LLVMSource {
             if (Test-Path (Join-Path $LLVM_SRC 'llvm')) {
                 Log "Using existing LLVM source at $LLVM_SRC"
             } else {
-                Log "Downloading LLVM $LLVM_VERSION source..."
-                $tarball = "C:\llvm-project-$LLVM_VERSION.src.tar.xz"
-                if (-not (Test-Path $tarball)) {
-                    $url = "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/llvm-project-$LLVM_VERSION.src.tar.xz"
-                    Log "Downloading from $url"
-                    Invoke-WebRequest -Uri $url -OutFile $tarball -UseBasicParsing -RetryIntervalSec 5 -MaximumRetryCount 3
-                }
-                New-Item -ItemType Directory -Path $LLVM_SRC -Force | Out-Null
-                Log "Extracting LLVM source (this takes a while)..."
-                # Use cmd /c to run the 7z pipe — in PowerShell, unhandled stdout
-                # from external commands becomes part of the function return value.
-                # cmd /c keeps the pipe internal and only returns the exit code.
-                # NOTE: 7z returns exit code 2 ("Sub items Errors") because the LLVM
-                # tarball contains Unix symlinks (test inputs) that can't be created
-                # on Windows. This is harmless — we verify by checking for key dirs.
-                $null = cmd /c "7z x `"$tarball`" -so 2>nul | 7z x -aoa -si -ttar `"-o$LLVM_SRC`" -y >nul 2>nul"
-                # Move contents up from nested dir (tarball root is llvm-project-X.Y.Z.src/)
-                $nested = Get-ChildItem $LLVM_SRC -Directory | Where-Object { $_.Name -like 'llvm-project-*' } | Select-Object -First 1
-                if ($nested) {
-                    Get-ChildItem $nested.FullName | Move-Item -Destination $LLVM_SRC -Force
-                    Remove-Item $nested.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                }
-                # Verify extraction succeeded
-                if (-not (Test-Path (Join-Path $LLVM_SRC 'llvm\CMakeLists.txt'))) {
-                    throw "LLVM source extraction failed — llvm/CMakeLists.txt not found in $LLVM_SRC"
-                }
-                Log "LLVM source extracted to $LLVM_SRC"
+                Log "Cloning LLVM $LLVM_VERSION (tag: llvmorg-$LLVM_VERSION)..."
+                $null = & git clone --depth 1 --branch "llvmorg-$LLVM_VERSION" "https://github.com/llvm/llvm-project.git" $LLVM_SRC 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
+                Log "LLVM source cloned to $LLVM_SRC"
             }
             return $LLVM_SRC
         }
@@ -203,21 +180,11 @@ function Build-LLVM {
 
     New-Item -ItemType Directory -Path $BUILD_DIR -Force | Out-Null
 
-    # Projects and runtimes based on variant
-    $projects = 'clang;lld;clang-tools-extra;lldb;mlir;polly'
+    # Projects and runtimes — unified for both variants
+    # bolt is Linux-only (ELF binary optimizer), excluded on Windows
+    $projects = 'clang;lld;clang-tools-extra;lldb;mlir;polly;flang'
     $runtimes = 'compiler-rt;flang-rt;openmp'
     $targets  = 'X86;AArch64;ARM;WebAssembly;RISCV;NVPTX;AMDGPU;BPF'
-
-    if ($VARIANT -eq 'p2996') {
-        $projects = 'clang;lld;clang-tools-extra;lldb'
-        $runtimes = 'compiler-rt'
-        $targets  = 'X86;AArch64;WebAssembly'
-    }
-
-    # Add flang for main variant
-    if ($VARIANT -eq 'main') {
-        $projects = "flang;$projects"
-    }
 
     # Detect Python & SWIG for LLDB
     $pyDir = Find-PythonForLLDB
@@ -303,7 +270,9 @@ function Build-LLVM {
             "-DPython3_LIBRARY=$pyLib",
             "-DSWIG_EXECUTABLE=$swigExe",
             "-DLLDB_PYTHON_HOME=../tools/python",
-            "-DLLDB_PYTHON_EXT_SUFFIX=.cp${pyPureVer}-win_amd64.pyd"
+            "-DLLDB_PYTHON_EXT_SUFFIX=.cp${pyPureVer}-win_amd64.pyd",
+            # MLIR Python bindings (requires nanobind; install with: pip install nanobind)
+            '-DMLIR_ENABLE_BINDINGS_PYTHON=ON'
         )
     } else {
         $cmakeArgs += '-DLLDB_ENABLE_PYTHON=OFF'
@@ -431,6 +400,21 @@ function Invoke-PostInstall {
         }
 
         Log "Python bundled to $pyDest"
+    }
+
+    # 4d. Install Clang Python bindings (pure Python files from source tree)
+    $sourceDir = if ($VARIANT -eq 'p2996') { $P2996_SRC } else { $LLVM_SRC }
+    $clangBindings = Join-Path $sourceDir 'clang\bindings\python\clang'
+    if (Test-Path $clangBindings) {
+        $pyDir2 = Find-PythonForLLDB
+        if ($pyDir2) {
+            $pyExe2 = Join-Path $pyDir2 'python.exe'
+            $pyVer2 = (& $pyExe2 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
+            $dest = Join-Path $INSTALL_PREFIX "lib\python$pyVer2\site-packages\clang"
+            New-Item -ItemType Directory -Path $dest -Force | Out-Null
+            Copy-Item "$clangBindings\*" -Destination $dest -Recurse -Force
+            Log "Clang Python bindings installed to $dest"
+        }
     }
 
     Log "Post-install complete"
