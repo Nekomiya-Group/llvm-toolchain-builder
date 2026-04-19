@@ -170,6 +170,8 @@ build_python() {
         --with-lto \
         --with-ensurepip=install \
         --with-system-ffi \
+        --with-openssl="${BOOTSTRAP_PREFIX}" \
+        --with-openssl-rpath=auto \
         LDFLAGS="-L${BOOTSTRAP_PREFIX}/lib64 -L${BOOTSTRAP_PREFIX}/lib -Wl,-rpath,${BOOTSTRAP_PREFIX}/lib64 -Wl,-rpath,${BOOTSTRAP_PREFIX}/lib"
 
     make -j"${NPROC}"
@@ -388,6 +390,41 @@ build_libffi() {
     mark_built "libffi-${LIBFFI_VERSION}"
 }
 
+build_openssl() {
+    if is_built "openssl-${OPENSSL_VERSION}"; then return; fi
+    log "Building OpenSSL ${OPENSSL_VERSION} (Python 3.10+ requires >= 1.1.1)..."
+
+    local tarball="${DOWNLOAD_DIR}/openssl-${OPENSSL_VERSION}.tar.gz"
+    download "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" "${tarball}"
+
+    cd "${BUILD_DIR}"
+    tar xf "${tarball}"
+    cd "openssl-${OPENSSL_VERSION}"
+
+    local openssl_target="linux-x86_64"
+    local openssl_extra="enable-ec_nistp_64_gcc_128"
+    if [[ "$(uname -m)" == "aarch64" ]]; then
+        openssl_target="linux-aarch64"
+        openssl_extra=""
+    fi
+
+    ./Configure \
+        "${openssl_target}" \
+        --prefix="${BOOTSTRAP_PREFIX}" \
+        --libdir=lib \
+        shared \
+        zlib \
+        ${openssl_extra} \
+        no-tests \
+        "-Wl,-rpath,${BOOTSTRAP_PREFIX}/lib"
+
+    make -j"${NPROC}"
+    make install_sw
+
+    mark_built "openssl-${OPENSSL_VERSION}"
+    log "OpenSSL ${OPENSSL_VERSION} installed"
+}
+
 build_xz() {
     if is_built "xz-${XZ_VERSION}"; then return; fi
     log "Building xz/liblzma ${XZ_VERSION}..."
@@ -437,8 +474,9 @@ run_bootstrap() {
     build_cmake
     build_ninja
 
-    # Library deps (order: zlib before libxml2, ncurses before libedit)
+    # Library deps (order: zlib before openssl/libxml2, ncurses before libedit)
     build_zlib
+    build_openssl
     build_zstd
     build_xz
     build_libffi
@@ -446,7 +484,7 @@ run_bootstrap() {
     build_libedit
     build_libxml2
 
-    # Python needs libffi, zlib, xz, ncurses
+    # Python needs libffi, zlib, xz, ncurses, openssl (>= 1.1.1)
     build_python
 
     # SWIG needs PCRE2 (built in-tree) and Python
