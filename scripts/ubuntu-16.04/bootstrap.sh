@@ -261,14 +261,12 @@ build_swig() {
     tar xf "${tarball}"
     cd "swig-${SWIG_VERSION}"
 
-    # SWIG requires PCRE2
-    if ! is_built "pcre2-${PCRE2_VERSION}"; then
-        build_pcre2
-    fi
+    # Use SWIG's bundled pcre-build.sh to build PCRE2 in-tree.
+    # This avoids cwd/pcre2-config issues with a separate CMake-based PCRE2 build.
+    Tools/pcre-build.sh
 
     ./configure \
-        --prefix="${BOOTSTRAP_PREFIX}" \
-        --with-pcre2-prefix="${BOOTSTRAP_PREFIX}"
+        --prefix="${BOOTSTRAP_PREFIX}"
 
     make -j"${NPROC}"
     make install
