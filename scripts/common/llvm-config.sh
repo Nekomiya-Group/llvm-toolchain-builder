@@ -116,6 +116,7 @@ generate_cmake_args() {
         "-DLLVM_INCLUDE_BENCHMARKS=OFF"
         "-DLLVM_INCLUDE_EXAMPLES=OFF"
         "-DLLVM_INCLUDE_DOCS=OFF"
+        "-DLLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF"
     )
 
     if [[ "${STAGE}" == "stage1" ]]; then
