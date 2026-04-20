@@ -143,7 +143,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /opt/stage1
-          key: x64-stage1-v1-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('scripts/common/versions.sh', 'scripts/common/source.sh', 'scripts/common/llvm-config.sh', 'scripts/linux-x64/build-llvm-stage1.sh') }}
+          key: x64-stage1-v2-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('scripts/common/versions.sh', 'scripts/common/source.sh', 'scripts/common/llvm-config-common.sh', 'scripts/common/llvm-config-stage1.sh', 'scripts/linux-x64/build-llvm-stage1.sh') }}
 
       - name: Download bootstrap tools
         if: steps.cache-stage1.outputs.cache-hit != 'true'
