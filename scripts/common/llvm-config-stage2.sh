@@ -32,8 +32,8 @@ generate_cmake_args() {
         "-DCMAKE_OBJDUMP=${STAGE1_PREFIX}/bin/llvm-objdump"
         "-DCMAKE_C_FLAGS=-w"
         "-DCMAKE_CXX_FLAGS=-stdlib=libc++ -w"
-        "-DCMAKE_EXE_LINKER_FLAGS=-stdlib=libc++ '-Wl,-rpath,\$ORIGIN/../lib' -Wl,-rpath,${STAGE1_PREFIX}/lib -Wl,-rpath,${STAGE1_PREFIX}/lib/${LLVM_HOST_TRIPLE} -Wl,-rpath,${BOOTSTRAP_PREFIX}/lib64 -Wl,-rpath,${BOOTSTRAP_PREFIX}/lib"
-        "-DCMAKE_SHARED_LINKER_FLAGS=-stdlib=libc++ '-Wl,-rpath,\$ORIGIN/../lib' -Wl,-rpath,${STAGE1_PREFIX}/lib -Wl,-rpath,${STAGE1_PREFIX}/lib/${LLVM_HOST_TRIPLE} -Wl,-rpath,${BOOTSTRAP_PREFIX}/lib64 -Wl,-rpath,${BOOTSTRAP_PREFIX}/lib"
+        "-DCMAKE_EXE_LINKER_FLAGS=-L${STAGE1_PREFIX}/lib -L${BOOTSTRAP_PREFIX}/lib64 -L${BOOTSTRAP_PREFIX}/lib '-Wl,-rpath,\$ORIGIN/../lib' -Wl,-rpath,${STAGE1_PREFIX}/lib -Wl,-rpath,${BOOTSTRAP_PREFIX}/lib64 -Wl,-rpath,${BOOTSTRAP_PREFIX}/lib"
+        "-DCMAKE_SHARED_LINKER_FLAGS=-L${STAGE1_PREFIX}/lib -L${BOOTSTRAP_PREFIX}/lib64 -L${BOOTSTRAP_PREFIX}/lib '-Wl,-rpath,\$ORIGIN/../lib' -Wl,-rpath,${STAGE1_PREFIX}/lib -Wl,-rpath,${BOOTSTRAP_PREFIX}/lib64 -Wl,-rpath,${BOOTSTRAP_PREFIX}/lib"
     )
 
     # ── Projects and runtimes: full build ───────────────────────────────
