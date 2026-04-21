@@ -54,7 +54,7 @@ jobs:
   bootstrap:
     name: Bootstrap Tools
     runs-on: ubuntu-latest
-    timeout-minutes: 540
+    timeout-minutes: 720
     outputs:
       cache-hit: ${{ steps.cache-bootstrap.outputs.cache-hit }}
     steps:
@@ -126,7 +126,7 @@ jobs:
     name: LLVM Stage 1
     needs: bootstrap
     runs-on: ubuntu-latest
-    timeout-minutes: 540
+    timeout-minutes: 720
     outputs:
       cache-hit: ${{ steps.cache-stage1.outputs.cache-hit }}
     steps:
@@ -225,7 +225,7 @@ jobs:
     name: LLVM Stage 2 (main)
     needs: [bootstrap, stage1]
     runs-on: ubuntu-latest
-    timeout-minutes: 540
+    timeout-minutes: 720
     outputs:
       cache-hit: ${{ steps.cache-stage2.outputs.cache-hit }}
     steps:
@@ -316,7 +316,7 @@ jobs:
     needs: [bootstrap, stage1]
     if: ${{ github.event.inputs.build_p2996 != 'false' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 540
+    timeout-minutes: 720
     outputs:
       cache-hit: ${{ steps.cache-stage2-p2996.outputs.cache-hit }}
     steps:

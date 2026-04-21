@@ -91,7 +91,7 @@ workflow:
 bootstrap:x64:
   extends: .linux-x64-base
   stage: bootstrap
-  timeout: 9h
+  timeout: 12h
   resource_group: x64-bootstrap
   script:
     - bash scripts/bootstrap/ubuntu-16.04.sh
@@ -112,7 +112,7 @@ stage1:x64:
   extends: .linux-x64-base
   stage: stage1
   needs: [bootstrap:x64]
-  timeout: 9h
+  timeout: 12h
   resource_group: x64-stage1
   script:
     # Restore bootstrap
@@ -137,7 +137,7 @@ stage2:x64:main:
   extends: .linux-x64-base
   stage: stage2
   needs: [bootstrap:x64, stage1:x64]
-  timeout: 9h
+  timeout: 12h
   resource_group: x64-stage2-main
   variables:
     VARIANT: main
@@ -163,7 +163,7 @@ stage2:x64:p2996:
   extends: .linux-x64-base
   stage: stage2
   needs: [bootstrap:x64, stage1:x64]
-  timeout: 9h
+  timeout: 12h
   resource_group: x64-stage2-p2996
   variables:
     VARIANT: p2996
@@ -221,7 +221,7 @@ verify:x64:24.04:
 bootstrap:arm64:
   extends: .linux-arm64-base
   stage: bootstrap
-  timeout: 9h
+  timeout: 12h
   resource_group: arm64-bootstrap
   script:
     - bash scripts/bootstrap/ubuntu-16.04.sh
@@ -238,7 +238,7 @@ stage1:arm64:
   extends: .linux-arm64-base
   stage: stage1
   needs: [bootstrap:arm64]
-  timeout: 9h
+  timeout: 12h
   resource_group: arm64-stage1
   script:
     - cd /opt && tar xf "${CI_PROJECT_DIR}/bootstrap-tools-arm64.tar"
@@ -257,7 +257,7 @@ stage2:arm64:main:
   extends: .linux-arm64-base
   stage: stage2
   needs: [bootstrap:arm64, stage1:arm64]
-  timeout: 9h
+  timeout: 12h
   resource_group: arm64-stage2-main
   variables:
     VARIANT: main
@@ -280,7 +280,7 @@ stage2:arm64:p2996:
   extends: .linux-arm64-base
   stage: stage2
   needs: [bootstrap:arm64, stage1:arm64]
-  timeout: 9h
+  timeout: 12h
   resource_group: arm64-stage2-p2996
   variables:
     VARIANT: p2996
@@ -343,7 +343,7 @@ verify:arm64:24.04:
 stage1:win:main:
   extends: .windows-base
   stage: stage1
-  timeout: 2h
+  timeout: 12h
   resource_group: win-stage1-main
   variables:
     VARIANT: main
@@ -372,7 +372,7 @@ stage2:win:main:
   extends: .windows-base
   stage: stage2
   needs: [stage1:win:main]
-  timeout: 2h
+  timeout: 12h
   resource_group: win-stage2-main
   variables:
     VARIANT: main
@@ -396,7 +396,7 @@ stage2:win:main:
 stage1:win:p2996:
   extends: .windows-base
   stage: stage1
-  timeout: 2h
+  timeout: 12h
   resource_group: win-stage1-p2996
   rules:
     - if: $BUILD_P2996 == "false"
@@ -426,7 +426,7 @@ stage2:win:p2996:
   extends: .windows-base
   stage: stage2
   needs: [stage1:win:p2996]
-  timeout: 2h
+  timeout: 12h
   resource_group: win-stage2-p2996
   rules:
     - if: $BUILD_P2996 == "false"

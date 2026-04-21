@@ -40,7 +40,7 @@ jobs:
   stage1-main:
     name: Stage 1 (main, MSVC)
     runs-on: windows-2022
-    timeout-minutes: 120
+    timeout-minutes: 720
     env:
       VARIANT: main
       INSTALL_PREFIX: 'C:\stage1'
@@ -89,7 +89,6 @@ jobs:
       - name: Build Stage 1
         if: steps.cache-stage1.outputs.cache-hit != 'true'
         shell: pwsh
-        timeout-minutes: 90
         env:
           NPROC: '64'
           PYTHON_DIR: ${{ env.pythonLocation }}
@@ -119,7 +118,7 @@ jobs:
     name: Stage 2 (main, libc++)
     needs: stage1-main
     runs-on: windows-2022
-    timeout-minutes: 120
+    timeout-minutes: 720
     env:
       VARIANT: main
       INSTALL_PREFIX: 'C:\coca-toolchain'
@@ -170,7 +169,6 @@ jobs:
 
       - name: Build Stage 2
         shell: pwsh
-        timeout-minutes: 90
         env:
           STAGE1_DIR: 'C:\stage1'
           BUILD_DIR: 'C:\b2'
@@ -199,7 +197,7 @@ jobs:
     name: Stage 1 (p2996, MSVC)
     runs-on: windows-2022
     if: ${{ github.event.inputs.build_p2996 != 'false' }}
-    timeout-minutes: 120
+    timeout-minutes: 720
     env:
       VARIANT: p2996
       INSTALL_PREFIX: 'C:\stage1-p2996'
@@ -248,7 +246,6 @@ jobs:
       - name: Build Stage 1 (p2996)
         if: steps.cache-stage1-p2996.outputs.cache-hit != 'true'
         shell: pwsh
-        timeout-minutes: 90
         env:
           NPROC: '64'
           PYTHON_DIR: ${{ env.pythonLocation }}
@@ -279,7 +276,7 @@ jobs:
     needs: stage1-p2996
     if: ${{ github.event.inputs.build_p2996 != 'false' }}
     runs-on: windows-2022
-    timeout-minutes: 120
+    timeout-minutes: 720
     env:
       VARIANT: p2996
       INSTALL_PREFIX: 'C:\coca-toolchain-p2996'
@@ -330,7 +327,6 @@ jobs:
 
       - name: Build Stage 2 (p2996)
         shell: pwsh
-        timeout-minutes: 90
         env:
           STAGE1_DIR: 'C:\stage1'
           BUILD_DIR: 'C:\b2'
