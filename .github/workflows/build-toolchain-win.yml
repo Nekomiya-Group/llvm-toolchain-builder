@@ -39,8 +39,8 @@ jobs:
   # ===========================================================================
   stage1-main:
     name: Stage 1 (main, MSVC)
-    runs-on: windows-2022
-    timeout-minutes: 540
+    runs-on: windows-64core
+    timeout-minutes: 120
     env:
       VARIANT: main
       INSTALL_PREFIX: 'C:\stage1'
@@ -89,9 +89,9 @@ jobs:
       - name: Build Stage 1
         if: steps.cache-stage1.outputs.cache-hit != 'true'
         shell: pwsh
-        timeout-minutes: 540
+        timeout-minutes: 90
         env:
-          NPROC: '4'
+          NPROC: '64'
           PYTHON_DIR: ${{ env.pythonLocation }}
           SKIP_ARCHIVE: 'true'
         run: |
@@ -118,8 +118,8 @@ jobs:
   stage2-main:
     name: Stage 2 (main, libc++)
     needs: stage1-main
-    runs-on: windows-2022
-    timeout-minutes: 540
+    runs-on: windows-64core
+    timeout-minutes: 120
     env:
       VARIANT: main
       INSTALL_PREFIX: 'C:\coca-toolchain'
@@ -170,11 +170,11 @@ jobs:
 
       - name: Build Stage 2
         shell: pwsh
-        timeout-minutes: 540
+        timeout-minutes: 90
         env:
           STAGE1_DIR: 'C:\stage1'
           BUILD_DIR: 'C:\b2'
-          NPROC: '4'
+          NPROC: '64'
           PYTHON_DIR: ${{ env.pythonLocation }}
         run: |
           & "${{ github.workspace }}\scripts\windows-x64\build-llvm-stage2.ps1"
@@ -197,9 +197,9 @@ jobs:
   # ===========================================================================
   stage1-p2996:
     name: Stage 1 (p2996, MSVC)
-    runs-on: windows-2022
+    runs-on: windows-64core
     if: ${{ github.event.inputs.build_p2996 != 'false' }}
-    timeout-minutes: 540
+    timeout-minutes: 120
     env:
       VARIANT: p2996
       INSTALL_PREFIX: 'C:\stage1-p2996'
@@ -248,9 +248,9 @@ jobs:
       - name: Build Stage 1 (p2996)
         if: steps.cache-stage1-p2996.outputs.cache-hit != 'true'
         shell: pwsh
-        timeout-minutes: 540
+        timeout-minutes: 90
         env:
-          NPROC: '4'
+          NPROC: '64'
           PYTHON_DIR: ${{ env.pythonLocation }}
           SKIP_ARCHIVE: 'true'
         run: |
@@ -278,8 +278,8 @@ jobs:
     name: Stage 2 (p2996, libc++)
     needs: stage1-p2996
     if: ${{ github.event.inputs.build_p2996 != 'false' }}
-    runs-on: windows-2022
-    timeout-minutes: 540
+    runs-on: windows-64core
+    timeout-minutes: 120
     env:
       VARIANT: p2996
       INSTALL_PREFIX: 'C:\coca-toolchain-p2996'
@@ -330,11 +330,11 @@ jobs:
 
       - name: Build Stage 2 (p2996)
         shell: pwsh
-        timeout-minutes: 540
+        timeout-minutes: 90
         env:
           STAGE1_DIR: 'C:\stage1'
           BUILD_DIR: 'C:\b2'
-          NPROC: '4'
+          NPROC: '64'
           PYTHON_DIR: ${{ env.pythonLocation }}
         run: |
           & "${{ github.workspace }}\scripts\windows-x64\build-llvm-stage2.ps1"
