@@ -1,0 +1,462 @@
+# =============================================================================
+# GitLab CI/CD — LLVM Toolchain Builder
+# =============================================================================
+# Equivalent of the GitHub Actions workflows. Targets the same build scripts.
+#
+# Architecture:
+#   Linux x64:   Bootstrap → Stage 1 → Stage 2 (main/p2996) → Verify
+#   Linux ARM64: Bootstrap → Stage 1 → Stage 2 (main/p2996) → Verify
+#   Windows x64: Stage 1 (MSVC) → Stage 2 (clang-cl + libc++) → Verify
+#
+# Runner requirements (configure in GitLab Admin → Runners):
+#   - linux-x64:   tag=saas-linux-medium-amd64, Docker executor, image=ubuntu:16.04
+#   - linux-arm64: tag=saas-linux-medium-arm64, Docker executor, image=arm64v8/ubuntu:16.04
+#   - windows:     tag=windows-x64, shell executor (PowerShell), 64-core recommended
+#
+# Key differences from GitHub Actions version:
+#   - Artifacts (not cache) pass build products between jobs (more reliable)
+#   - Cache is only used for the final tar.xz/zip to skip repeat builds
+#   - Docker images are set via `image:` not `docker run` (GitLab handles it)
+#   - Artifacts are tar'd because GitLab artifacts are always relative to $CI_PROJECT_DIR
+#     unless the runner's `builds_dir` config allows it
+#
+# Variables (set in CI/CD → Variables or pipeline trigger):
+#   LLVM_VERSION:  Override LLVM version (default: 21.1.1)
+#   BUILD_P2996:   Set to "false" to skip p2996 builds
+#   FORCE_REBUILD: Set to "true" to ignore caches
+# =============================================================================
+
+stages:
+  - bootstrap
+  - stage1
+  - stage2
+  - verify
+
+variables:
+  LLVM_VERSION: "21.1.1"
+  BOOTSTRAP_PREFIX: /opt/bootstrap
+  STAGE1_PREFIX: /opt/stage1
+  GIT_DEPTH: 1
+  FF_USE_FASTZIP: "true"
+  ARTIFACT_COMPRESSION_LEVEL: fast
+  CACHE_COMPRESSION_LEVEL: fast
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "web"
+    - if: $CI_PIPELINE_SOURCE == "api"
+    - if: $CI_PIPELINE_SOURCE == "trigger"
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes:
+        - scripts/common/**
+        - scripts/bootstrap/**
+        - scripts/linux-x64/**
+        - scripts/linux-arm64/**
+        - scripts/windows-x64/**
+        - .gitlab-ci.yml
+
+# =============================================================================
+# Templates
+# =============================================================================
+
+# Common setup for all Linux builds inside ubuntu:16.04 containers.
+# The build scripts expect tools at /opt/bootstrap and /opt/stage1, so we
+# extract artifacts there. GitLab artifacts are always relative to
+# $CI_PROJECT_DIR, so bootstrap/stage1 jobs tar the install dirs and
+# downstream jobs untar them to /opt/.
+.linux-x64-base:
+  tags: [saas-linux-medium-amd64]
+  image: ubuntu:16.04
+  before_script:
+    - apt-get update -qq
+    - DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends
+        ca-certificates curl file patchelf xz-utils git binutils libc6-dev
+
+.linux-arm64-base:
+  tags: [saas-linux-medium-arm64]
+  image: arm64v8/ubuntu:16.04
+  before_script:
+    - apt-get update -qq
+    - DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends
+        ca-certificates curl file patchelf xz-utils git binutils libc6-dev
+
+.windows-base:
+  tags: [windows-x64]
+
+# =============================================================================
+# LINUX x86_64
+# =============================================================================
+
+bootstrap:x64:
+  extends: .linux-x64-base
+  stage: bootstrap
+  timeout: 9h
+  resource_group: x64-bootstrap
+  script:
+    - bash scripts/bootstrap/ubuntu-16.04.sh
+    - export PATH="/opt/bootstrap/bin:${PATH}"
+    - export LD_LIBRARY_PATH="/opt/bootstrap/lib64:/opt/bootstrap/lib"
+    - gcc --version | head -1
+    - cmake --version | head -1
+    - ninja --version
+    - python3 --version
+    # Pack into project dir so GitLab can upload as artifact
+    - cd /opt && tar cf "${CI_PROJECT_DIR}/bootstrap-tools.tar" bootstrap/
+  artifacts:
+    paths:
+      - bootstrap-tools.tar
+    expire_in: 7 days
+
+stage1:x64:
+  extends: .linux-x64-base
+  stage: stage1
+  needs: [bootstrap:x64]
+  timeout: 9h
+  resource_group: x64-stage1
+  script:
+    # Restore bootstrap
+    - cd /opt && tar xf "${CI_PROJECT_DIR}/bootstrap-tools.tar"
+    - export PATH="/opt/bootstrap/bin:${PATH}"
+    - export LD_LIBRARY_PATH="/opt/bootstrap/lib64:/opt/bootstrap/lib"
+    - cd "${CI_PROJECT_DIR}"
+    # Build
+    - bash scripts/linux-x64/build-llvm-stage1.sh
+    # Verify
+    - export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
+    - /opt/stage1/bin/clang --version
+    - /opt/stage1/bin/ld.lld --version
+    # Pack
+    - cd /opt && tar cf "${CI_PROJECT_DIR}/stage1-install.tar" stage1/
+  artifacts:
+    paths:
+      - stage1-install.tar
+    expire_in: 7 days
+
+stage2:x64:main:
+  extends: .linux-x64-base
+  stage: stage2
+  needs: [bootstrap:x64, stage1:x64]
+  timeout: 9h
+  resource_group: x64-stage2-main
+  variables:
+    VARIANT: main
+    INSTALL_PREFIX: /opt/coca-toolchain
+  script:
+    # Restore bootstrap + stage1
+    - cd /opt
+    - tar xf "${CI_PROJECT_DIR}/bootstrap-tools.tar"
+    - tar xf "${CI_PROJECT_DIR}/stage1-install.tar"
+    - cd "${CI_PROJECT_DIR}"
+    - export PATH="/opt/stage1/bin:/opt/bootstrap/bin:${PATH}"
+    - export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
+    # Build
+    - bash scripts/linux-x64/build-llvm-stage2.sh
+    # The build script creates /tmp/coca-toolchain-linux-x86_64.tar.xz
+    - cp /tmp/coca-toolchain-linux-x86_64.tar.xz "${CI_PROJECT_DIR}/"
+  artifacts:
+    paths:
+      - coca-toolchain-linux-x86_64.tar.xz
+    expire_in: 30 days
+
+stage2:x64:p2996:
+  extends: .linux-x64-base
+  stage: stage2
+  needs: [bootstrap:x64, stage1:x64]
+  timeout: 9h
+  resource_group: x64-stage2-p2996
+  variables:
+    VARIANT: p2996
+    INSTALL_PREFIX: /opt/coca-toolchain-p2996
+  rules:
+    - if: $BUILD_P2996 == "false"
+      when: never
+    - when: on_success
+  script:
+    - cd /opt
+    - tar xf "${CI_PROJECT_DIR}/bootstrap-tools.tar"
+    - tar xf "${CI_PROJECT_DIR}/stage1-install.tar"
+    - cd "${CI_PROJECT_DIR}"
+    - export PATH="/opt/stage1/bin:/opt/bootstrap/bin:${PATH}"
+    - export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
+    - bash scripts/linux-x64/build-llvm-stage2.sh
+    - cp /tmp/coca-toolchain-p2996-linux-x86_64.tar.xz "${CI_PROJECT_DIR}/"
+  artifacts:
+    paths:
+      - coca-toolchain-p2996-linux-x86_64.tar.xz
+    expire_in: 30 days
+
+# ── Verify x64 ──────────────────────────────────────────────────────────────
+.verify-x64:
+  stage: verify
+  tags: [saas-linux-medium-amd64]
+  timeout: 30m
+  variables:
+    TOOLCHAIN_DIR: /opt/coca-toolchain-linux-x86_64
+  script:
+    - mkdir -p /opt && cd /opt
+    - tar xf "${CI_PROJECT_DIR}/coca-toolchain-linux-x86_64.tar.xz"
+    - cd "${CI_PROJECT_DIR}"
+    - bash scripts/ubuntu-16.04/verify-portability.sh
+
+verify:x64:16.04:
+  extends: .verify-x64
+  image: ubuntu:16.04
+  needs: [stage2:x64:main]
+
+verify:x64:20.04:
+  extends: .verify-x64
+  image: ubuntu:20.04
+  needs: [stage2:x64:main]
+
+verify:x64:24.04:
+  extends: .verify-x64
+  image: ubuntu:24.04
+  needs: [stage2:x64:main]
+
+# =============================================================================
+# LINUX ARM64
+# =============================================================================
+
+bootstrap:arm64:
+  extends: .linux-arm64-base
+  stage: bootstrap
+  timeout: 9h
+  resource_group: arm64-bootstrap
+  script:
+    - bash scripts/bootstrap/ubuntu-16.04.sh
+    - export PATH="/opt/bootstrap/bin:${PATH}"
+    - export LD_LIBRARY_PATH="/opt/bootstrap/lib64:/opt/bootstrap/lib"
+    - gcc --version | head -1
+    - cd /opt && tar cf "${CI_PROJECT_DIR}/bootstrap-tools-arm64.tar" bootstrap/
+  artifacts:
+    paths:
+      - bootstrap-tools-arm64.tar
+    expire_in: 7 days
+
+stage1:arm64:
+  extends: .linux-arm64-base
+  stage: stage1
+  needs: [bootstrap:arm64]
+  timeout: 9h
+  resource_group: arm64-stage1
+  script:
+    - cd /opt && tar xf "${CI_PROJECT_DIR}/bootstrap-tools-arm64.tar"
+    - export PATH="/opt/bootstrap/bin:${PATH}"
+    - export LD_LIBRARY_PATH="/opt/bootstrap/lib64:/opt/bootstrap/lib"
+    - cd "${CI_PROJECT_DIR}"
+    - bash scripts/linux-arm64/build-llvm-stage1.sh
+    - /opt/stage1/bin/clang --version
+    - cd /opt && tar cf "${CI_PROJECT_DIR}/stage1-install-arm64.tar" stage1/
+  artifacts:
+    paths:
+      - stage1-install-arm64.tar
+    expire_in: 7 days
+
+stage2:arm64:main:
+  extends: .linux-arm64-base
+  stage: stage2
+  needs: [bootstrap:arm64, stage1:arm64]
+  timeout: 9h
+  resource_group: arm64-stage2-main
+  variables:
+    VARIANT: main
+    INSTALL_PREFIX: /opt/coca-toolchain
+  script:
+    - cd /opt
+    - tar xf "${CI_PROJECT_DIR}/bootstrap-tools-arm64.tar"
+    - tar xf "${CI_PROJECT_DIR}/stage1-install-arm64.tar"
+    - cd "${CI_PROJECT_DIR}"
+    - export PATH="/opt/stage1/bin:/opt/bootstrap/bin:${PATH}"
+    - export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
+    - bash scripts/linux-arm64/build-llvm-stage2.sh
+    - cp /tmp/coca-toolchain-linux-aarch64.tar.xz "${CI_PROJECT_DIR}/"
+  artifacts:
+    paths:
+      - coca-toolchain-linux-aarch64.tar.xz
+    expire_in: 30 days
+
+stage2:arm64:p2996:
+  extends: .linux-arm64-base
+  stage: stage2
+  needs: [bootstrap:arm64, stage1:arm64]
+  timeout: 9h
+  resource_group: arm64-stage2-p2996
+  variables:
+    VARIANT: p2996
+    INSTALL_PREFIX: /opt/coca-toolchain-p2996
+  rules:
+    - if: $BUILD_P2996 == "false"
+      when: never
+    - when: on_success
+  script:
+    - cd /opt
+    - tar xf "${CI_PROJECT_DIR}/bootstrap-tools-arm64.tar"
+    - tar xf "${CI_PROJECT_DIR}/stage1-install-arm64.tar"
+    - cd "${CI_PROJECT_DIR}"
+    - export PATH="/opt/stage1/bin:/opt/bootstrap/bin:${PATH}"
+    - export LD_LIBRARY_PATH="/opt/stage1/lib:/opt/bootstrap/lib64:/opt/bootstrap/lib"
+    - bash scripts/linux-arm64/build-llvm-stage2.sh
+    - cp /tmp/coca-toolchain-p2996-linux-aarch64.tar.xz "${CI_PROJECT_DIR}/"
+  artifacts:
+    paths:
+      - coca-toolchain-p2996-linux-aarch64.tar.xz
+    expire_in: 30 days
+
+# ── Verify ARM64 ─────────────────────────────────────────────────────────────
+.verify-arm64:
+  stage: verify
+  tags: [saas-linux-medium-arm64]
+  timeout: 30m
+  variables:
+    TOOLCHAIN_DIR: /opt/coca-toolchain-linux-aarch64
+  script:
+    - mkdir -p /opt && cd /opt
+    - tar xf "${CI_PROJECT_DIR}/coca-toolchain-linux-aarch64.tar.xz"
+    - cd "${CI_PROJECT_DIR}"
+    - bash scripts/ubuntu-16.04/verify-portability.sh
+
+verify:arm64:16.04:
+  extends: .verify-arm64
+  image: arm64v8/ubuntu:16.04
+  needs: [stage2:arm64:main]
+
+verify:arm64:20.04:
+  extends: .verify-arm64
+  image: arm64v8/ubuntu:20.04
+  needs: [stage2:arm64:main]
+
+verify:arm64:24.04:
+  extends: .verify-arm64
+  image: arm64v8/ubuntu:24.04
+  needs: [stage2:arm64:main]
+
+# =============================================================================
+# WINDOWS x64 (two-stage: MSVC → clang-cl + libc++)
+# =============================================================================
+# Windows jobs use the shell executor (PowerShell). The runner must have:
+#   - Visual Studio 2022 with C++ workload
+#   - Python 3.14 in PATH
+#   - 7-Zip in PATH
+# Stage 1 output stays on the runner disk; artifacts pass the zip to Stage 2.
+
+stage1:win:main:
+  extends: .windows-base
+  stage: stage1
+  timeout: 2h
+  resource_group: win-stage1-main
+  variables:
+    VARIANT: main
+    INSTALL_PREFIX: 'C:\stage1'
+    BUILD_DIR: 'C:\b'
+    NPROC: "64"
+    SKIP_ARCHIVE: "true"
+  script:
+    # Free disk space
+    - |
+      foreach ($d in @('C:\Android','C:\SeleniumWebDrivers','C:\hostedtoolcache')) {
+        if (Test-Path $d) { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
+      }
+    - '& "$CI_PROJECT_DIR\scripts\windows-x64\build-llvm.ps1"'
+    - C:\stage1\bin\clang-cl.exe --version
+    # Archive for artifact transfer
+    - New-Item -ItemType Directory -Path C:\stage1-archive -Force | Out-Null
+    - '& 7z a -tzip -mx=3 -mmt=on C:\stage1-archive\stage1.zip C:\stage1 | Select-Object -Last 3'
+    - Copy-Item C:\stage1-archive\stage1.zip "${CI_PROJECT_DIR}\stage1.zip"
+  artifacts:
+    paths:
+      - stage1.zip
+    expire_in: 7 days
+
+stage2:win:main:
+  extends: .windows-base
+  stage: stage2
+  needs: [stage1:win:main]
+  timeout: 2h
+  resource_group: win-stage2-main
+  variables:
+    VARIANT: main
+    STAGE1_DIR: 'C:\stage1'
+    INSTALL_PREFIX: 'C:\coca-toolchain'
+    BUILD_DIR: 'C:\b2'
+    NPROC: "64"
+  script:
+    # Extract Stage 1
+    - '& 7z x "${CI_PROJECT_DIR}\stage1.zip" -oC:\ -y | Select-Object -Last 3'
+    - C:\stage1\bin\clang-cl.exe --version
+    # Build Stage 2
+    - '& "$CI_PROJECT_DIR\scripts\windows-x64\build-llvm-stage2.ps1"'
+    # The script creates C:\coca-toolchain-win-x86_64.zip
+    - Copy-Item C:\coca-toolchain-win-x86_64.zip "${CI_PROJECT_DIR}\coca-toolchain-win-x86_64.zip"
+  artifacts:
+    paths:
+      - coca-toolchain-win-x86_64.zip
+    expire_in: 14 days
+
+stage1:win:p2996:
+  extends: .windows-base
+  stage: stage1
+  timeout: 2h
+  resource_group: win-stage1-p2996
+  rules:
+    - if: $BUILD_P2996 == "false"
+      when: never
+    - when: on_success
+  variables:
+    VARIANT: p2996
+    INSTALL_PREFIX: 'C:\stage1-p2996'
+    BUILD_DIR: 'C:\b'
+    NPROC: "64"
+    SKIP_ARCHIVE: "true"
+  script:
+    - |
+      foreach ($d in @('C:\Android','C:\SeleniumWebDrivers','C:\hostedtoolcache')) {
+        if (Test-Path $d) { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue }
+      }
+    - '& "$CI_PROJECT_DIR\scripts\windows-x64\build-llvm.ps1"'
+    - New-Item -ItemType Directory -Path C:\stage1-p2996-archive -Force | Out-Null
+    - '& 7z a -tzip -mx=3 -mmt=on C:\stage1-p2996-archive\stage1.zip C:\stage1-p2996 | Select-Object -Last 3'
+    - Copy-Item C:\stage1-p2996-archive\stage1.zip "${CI_PROJECT_DIR}\stage1-p2996.zip"
+  artifacts:
+    paths:
+      - stage1-p2996.zip
+    expire_in: 7 days
+
+stage2:win:p2996:
+  extends: .windows-base
+  stage: stage2
+  needs: [stage1:win:p2996]
+  timeout: 2h
+  resource_group: win-stage2-p2996
+  rules:
+    - if: $BUILD_P2996 == "false"
+      when: never
+    - when: on_success
+  variables:
+    VARIANT: p2996
+    STAGE1_DIR: 'C:\stage1'
+    INSTALL_PREFIX: 'C:\coca-toolchain-p2996'
+    BUILD_DIR: 'C:\b2'
+    NPROC: "64"
+  script:
+    - '& 7z x "${CI_PROJECT_DIR}\stage1-p2996.zip" -oC:\ -y | Select-Object -Last 3'
+    - Rename-Item C:\stage1-p2996 C:\stage1
+    - C:\stage1\bin\clang-cl.exe --version
+    - '& "$CI_PROJECT_DIR\scripts\windows-x64\build-llvm-stage2.ps1"'
+    - Copy-Item C:\coca-toolchain-p2996-win-x86_64.zip "${CI_PROJECT_DIR}\coca-toolchain-p2996-win-x86_64.zip"
+  artifacts:
+    paths:
+      - coca-toolchain-p2996-win-x86_64.zip
+    expire_in: 14 days
+
+# ── Verify Windows ───────────────────────────────────────────────────────────
+verify:win:main:
+  extends: .windows-base
+  stage: verify
+  needs: [stage2:win:main]
+  timeout: 30m
+  variables:
+    TOOLCHAIN_DIR: 'C:\coca-toolchain-win-x86_64'
+  script:
+    - '& 7z x "${CI_PROJECT_DIR}\coca-toolchain-win-x86_64.zip" -oC:\ -y'
+    - '& "$CI_PROJECT_DIR\scripts\windows-x64\verify-portability.ps1"'

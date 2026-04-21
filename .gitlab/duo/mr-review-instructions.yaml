@@ -1,0 +1,44 @@
+# GitLab Duo Code Review Instructions
+# https://docs.gitlab.com/user/duo_agent_platform/customize/review_instructions/
+#
+# These instructions guide GitLab Duo's AI-powered code review for merge requests.
+
+default:
+  instructions: |
+    You are reviewing a CI/CD infrastructure repository that builds LLVM toolchains.
+    This is a production-critical build system — mistakes can waste hours of CI time.
+
+    Priorities (in order):
+    1. **Correctness**: Will the change build successfully on all 3 platforms?
+    2. **Cache safety**: Does this change invalidate caches unnecessarily?
+    3. **Architecture integrity**: Does this maintain stage1/stage2 separation?
+    4. **Minimal diff**: Is the change as small as it could be?
+
+    Common mistakes to catch:
+    - Putting C++-only flags (like -stdlib=libc++) in C compiler/linker flags
+    - Missing LD_LIBRARY_PATH entries causing "cannot open shared object"
+    - Cache key changes that invalidate Stage 1 (~40 min rebuild)
+    - Windows-specific: missing MSVC environment setup, wrong path separators
+    - Artifact path mismatches between upload and download steps
+
+file_types:
+  "*.sh":
+    instructions: |
+      Shell scripts in this repo are build scripts for LLVM.
+      Check for: proper quoting, correct use of environment variables
+      (BOOTSTRAP_PREFIX, STAGE1_PREFIX, INSTALL_PREFIX), and platform guards.
+
+  "*.ps1":
+    instructions: |
+      PowerShell scripts handle Windows LLVM builds. Check for:
+      - Correct Visual Studio environment setup (Invoke-VsDevShell)
+      - Proper path handling (backslashes, C:\ paths)
+      - Error handling with $ErrorActionPreference and throw
+      - NPROC usage for parallelism
+
+  "*.yml":
+    instructions: |
+      YAML files are CI/CD pipeline definitions.
+      For .gitlab-ci.yml: check stage ordering, needs/dependencies, cache keys,
+      artifact paths, and resource_group usage.
+      For GitHub Actions: check runs-on, uses versions, env variable scoping.
