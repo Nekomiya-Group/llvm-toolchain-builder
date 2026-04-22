@@ -1,0 +1,32 @@
+# LLVM Toolchain Builder — Workspace Rules
+
+## Dependency Architecture (MANDATORY)
+
+The final distributable toolchain (Stage 2 output) has a strict dependency hierarchy:
+
+### Allowed runtime dependencies for Stage 2 binaries
+1. **glibc** (system) — the ONLY system dependency; target minimum = Ubuntu 16.04 glibc
+2. **Stage 2's own runtimes** — libc++, libc++abi, libunwind, compiler-rt (built in the same Stage 2 invocation)
+3. **Bundled pure-C libraries** — zlib, zstd, libxml2, ncurses, libedit, libffi, lzma, libpython (built in bootstrap, statically linked where possible, bundled as .so otherwise)
+
+### NEVER allowed as runtime dependencies
+- **libstdc++** — Stage 2 uses libc++, never libstdc++
+- **libgcc_s** — Stage 2 uses libunwind, never libgcc_s
+- **libatomic** — must not appear in DT_NEEDED; compiler-rt builtins provide atomics
+- **Any library from bootstrap GCC** (lib64/libstdc++*, lib64/libgcc_s*, lib64/libatomic*)
+
+### Build-time vs link-time vs runtime separation
+- `LD_LIBRARY_PATH` with bootstrap paths: OK during build (Stage 1 clang executable needs them to run)
+- `CMAKE_EXE_LINKER_FLAGS` / `CMAKE_SHARED_LINKER_FLAGS` with `-L${BOOTSTRAP_PREFIX}`: **FORBIDDEN** — this causes Stage 2 binaries to link against bootstrap libs
+- `-Wl,-rpath,${BOOTSTRAP_PREFIX}`: **FORBIDDEN** — hardcodes bootstrap path into ELF binaries
+- `LDFLAGS` with bootstrap paths: **FORBIDDEN** for the same reason
+
+### Linker flag rules for Stage 2
+- `-L` paths: only `${STAGE1_PREFIX}/lib` (for Stage 1's libc++/libunwind during compilation)
+- `-rpath`: only `$ORIGIN/../lib` (for bin/) and `$ORIGIN` (for lib/)
+- No build-tree or install-tree absolute rpaths in the final binary
+
+### post-install.sh rules
+- Bundle ONLY pure-C third-party libraries (zlib, zstd, libxml2, ncurses, libedit, libffi, lzma, python)
+- NEVER bundle libstdc++, libgcc_s, libatomic, or any GCC runtime
+- Always verify with `ldd` that no "not found" and no GCC libs appear in dependencies

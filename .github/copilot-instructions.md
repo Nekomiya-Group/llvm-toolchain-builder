@@ -53,7 +53,7 @@ scripts/
 
 - **`LLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF`**: Runtimes install to `lib/` not `lib/<triple>/`, so `$ORIGIN/../lib` rpath works universally.
 - **Linux Stage 2 uses `-stdlib=libc++`** in `CMAKE_CXX_FLAGS` (not linker flags, to avoid polluting C compiler tests).
-- **Linux Stage 2 linker flags** include `-L` paths (link-time) and `-Wl,-rpath` (runtime) for Stage 1 and bootstrap lib directories.
+- **Linux Stage 2 linker flags** include `-L` and `-Wl,-rpath` for Stage 1 lib only. Bootstrap paths are FORBIDDEN in linker flags — they would cause Stage 2 binaries to link against libstdc++/libgcc_s/libatomic.
 - **`LD_LIBRARY_PATH`** in Linux Stage 2 build scripts includes the build tree's `lib/` so host tools (flang, etc.) can find freshly-built shared libs.
 - **Linux cache strategy**: Stage 1 cache key only hashes `llvm-config-common.sh` + `llvm-config-stage1.sh`, so Stage 2-only changes don't trigger Stage 1 rebuilds.
 - **Windows dual-stage**: Stage 1 uses MSVC cl.exe, Stage 2 uses Stage 1 clang-cl.exe with libc++ as default C++ stdlib. Windows does NOT build libunwind/libcxxabi (uses SEH + MSVC ABI).
@@ -78,9 +78,21 @@ When diagnosing CI failures, check these in order:
 4. **CMake C compiler test fails**: Often caused by linker flags that only make sense for C++ (e.g., `-stdlib=libc++`).
 5. **OOM / `basic_string::_M_create`**: May actually be corrupted data from loading wrong shared libs, not true OOM.
 
+## Dependency Architecture (MANDATORY)
+
+Stage 2 binaries have a strict dependency hierarchy:
+
+- **Allowed**: glibc (system), Stage 2's own libc++/libunwind/compiler-rt, bundled pure-C libs (zlib, zstd, libxml2, ncurses, libedit, libffi, lzma, python)
+- **FORBIDDEN**: libstdc++, libgcc_s, libatomic, or any GCC runtime from bootstrap
+- `CMAKE_EXE_LINKER_FLAGS` / `CMAKE_SHARED_LINKER_FLAGS` must NEVER contain `-L${BOOTSTRAP_PREFIX}` or `-Wl,-rpath,${BOOTSTRAP_PREFIX}`
+- `LDFLAGS` env must NEVER contain bootstrap paths
+- `LD_LIBRARY_PATH` with bootstrap paths is OK during build (Stage 1 clang needs them to run)
+- `post-install.sh` verifies with `ldd` that no forbidden deps exist
+
 ## Fix Guidelines
 
 - **Root cause fixes only**: Never use workarounds. If a library path is wrong, fix the path — don't symlink.
 - **Architecture integrity**: Changes must maintain the stage1/stage2 separation and cache strategy.
 - **No technical debt**: Every fix should be the correct, long-term solution.
 - **Test the fix mentally**: Will it work on x86_64, ARM64, AND Windows? If not, use platform guards.
+- **Cache awareness**: Changes to Stage 1 scripts invalidate ~40min rebuild.

@@ -53,7 +53,7 @@ scripts/
 
 - **`LLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF`**: Runtimes install to `lib/` not `lib/<triple>/`, so `$ORIGIN/../lib` rpath works universally.
 - **Linux Stage 2** uses `-stdlib=libc++` in `CMAKE_CXX_FLAGS` (not linker flags).
-- **Linux Stage 2 linker flags** include `-L` paths and `-Wl,-rpath` for Stage 1 and bootstrap lib directories.
+- **Linux Stage 2 linker flags** include `-L` and `-Wl,-rpath` for Stage 1 lib only. Bootstrap paths are FORBIDDEN in linker flags — they would cause Stage 2 binaries to link against libstdc++/libgcc_s/libatomic.
 - **Linux cache strategy**: Stage 1 cache key only hashes `llvm-config-common.sh` + `llvm-config-stage1.sh`, so Stage 2-only changes don't trigger Stage 1 rebuilds.
 - **Windows dual-stage**: Stage 1 uses MSVC cl.exe, Stage 2 uses clang-cl.exe. Windows does NOT build libunwind/libcxxabi (uses SEH + MSVC ABI).
 - **Windows Stage 2 defaults**: `CLANG_DEFAULT_CXX_STDLIB=libc++`, `CLANG_DEFAULT_RTLIB=compiler-rt`, `CLANG_DEFAULT_LINKER=lld`.
@@ -65,6 +65,17 @@ scripts/
 3. **`relocation error` / `symbol version not defined`**: Build-tree `lib/` not in `LD_LIBRARY_PATH`.
 4. **CMake C compiler test fails**: Linker flags that only make sense for C++ (e.g., `-stdlib=libc++`).
 5. **OOM / `basic_string::_M_create`**: Often corrupted data from loading wrong shared libs.
+
+## Dependency Architecture (MANDATORY)
+
+Stage 2 binaries have a strict dependency hierarchy:
+
+- **Allowed**: glibc (system), Stage 2's own libc++/libunwind/compiler-rt, bundled pure-C libs (zlib, zstd, libxml2, ncurses, libedit, libffi, lzma, python)
+- **FORBIDDEN**: libstdc++, libgcc_s, libatomic, or any GCC runtime from bootstrap
+- `CMAKE_EXE_LINKER_FLAGS` / `CMAKE_SHARED_LINKER_FLAGS` must NEVER contain `-L${BOOTSTRAP_PREFIX}` or `-Wl,-rpath,${BOOTSTRAP_PREFIX}`
+- `LDFLAGS` env must NEVER contain bootstrap paths
+- `LD_LIBRARY_PATH` with bootstrap paths is OK during build (Stage 1 clang needs them to run)
+- `post-install.sh` verifies with `ldd` that no forbidden deps exist
 
 ## Fix Guidelines
 

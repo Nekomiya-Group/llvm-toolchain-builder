@@ -25,9 +25,10 @@ bundle_shared_libs() {
     local lib_dest="${INSTALL_PREFIX}/lib"
     mkdir -p "${lib_dest}"
 
+    # Only bundle pure-C third-party libraries.
+    # NEVER bundle GCC runtimes (libstdc++, libgcc_s, libatomic) — Stage 2
+    # uses libc++/libunwind/compiler-rt, not GCC runtimes.
     local libs_to_copy=(
-        "${BOOTSTRAP_PREFIX}/lib64/libstdc++.so"*
-        "${BOOTSTRAP_PREFIX}/lib64/libgcc_s.so"*
         "${BOOTSTRAP_PREFIX}/lib/libz.so"*
         "${BOOTSTRAP_PREFIX}/lib/libzstd.so"*
         "${BOOTSTRAP_PREFIX}/lib/libxml2.so"*
@@ -169,11 +170,43 @@ create_archive() {
     ls -lh "/tmp/${archive_name}.tar.xz"
 }
 
+# ── 7. Verify no forbidden dependencies ────────────────────────────────
+verify_no_forbidden_deps() {
+    log "Verifying no forbidden runtime dependencies..."
+
+    local forbidden_pattern="libstdc++|libgcc_s|libatomic"
+    local fail=0
+
+    for bin in "${INSTALL_PREFIX}/bin/clang" "${INSTALL_PREFIX}/bin/ld.lld" \
+               "${INSTALL_PREFIX}/bin/lldb" "${INSTALL_PREFIX}/lib/libLLVM"*.so*; do
+        [[ -f "${bin}" ]] || continue
+        local deps
+        deps=$(ldd "${bin}" 2>/dev/null || true)
+        if echo "${deps}" | grep -qE "${forbidden_pattern}"; then
+            log "ERROR: Forbidden dependency found in $(basename "${bin}"):"
+            echo "${deps}" | grep -E "${forbidden_pattern}" | sed 's/^/    /'
+            fail=1
+        fi
+        if echo "${deps}" | grep -q "not found"; then
+            log "ERROR: Unresolved dependency in $(basename "${bin}"):"
+            echo "${deps}" | grep "not found" | sed 's/^/    /'
+            fail=1
+        fi
+    done
+
+    if [[ ${fail} -ne 0 ]]; then
+        log "FATAL: Forbidden or unresolved dependencies detected. Build is broken."
+        return 1
+    fi
+    log "Dependency verification passed"
+}
+
 # ── Run all post-install steps ──────────────────────────────────────────
 run_post_install() {
     bundle_shared_libs
     install_clang_python_bindings
     fix_rpaths
+    verify_no_forbidden_deps
     strip_binaries
     bundle_python_stdlib
     create_archive

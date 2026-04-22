@@ -33,7 +33,9 @@ export LD_LIBRARY_PATH="${STAGE2_BUILD}/lib:${STAGE1_PREFIX}/lib:${STAGE1_PREFIX
 # LDFLAGS is picked up by CMake compiler tests in ExternalProject sub-builds
 # (e.g. BOLT runtime) which don't inherit Stage 2's CMAKE_EXE_LINKER_FLAGS.
 # Stage 1 clang defaults to libunwind, so the linker must find it.
-export LDFLAGS="-L${STAGE1_PREFIX}/lib -L${BOOTSTRAP_PREFIX}/lib64 -L${BOOTSTRAP_PREFIX}/lib"
+# NEVER add bootstrap paths here — that would cause Stage 2 binaries to link
+# against libstdc++/libgcc_s/libatomic from bootstrap GCC.
+export LDFLAGS="-L${STAGE1_PREFIX}/lib"
 
 source "${COMMON_DIR}/versions.sh"
 source "${COMMON_DIR}/source.sh"
