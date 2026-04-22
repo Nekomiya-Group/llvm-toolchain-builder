@@ -65,8 +65,7 @@ create_clang_config() {
         cat > "${cfg_dir}/${cfg}" << 'EOF'
 # Ensure the linker can find libc++, libunwind, and compiler-rt builtins
 # installed in <prefix>/lib (LLVM_ENABLE_PER_TARGET_RUNTIME_DIR=OFF).
-# $ prefix = only passed when invoking the linker.
-$-L<CFGDIR>/../lib
+-L<CFGDIR>/../lib
 EOF
         log "  Created ${cfg_dir}/${cfg}"
     done
