@@ -109,7 +109,7 @@ install_test_deps() {
     if command -v apt-get &>/dev/null; then
         apt-get update -qq 2>/dev/null || true
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            file libc6-dev ca-certificates git make wget 2>/dev/null || true
+            file libc6-dev ca-certificates git make wget pkg-config 2>/dev/null || true
     fi
 
     # Ensure a modern cmake (>= 3.14) is available.
