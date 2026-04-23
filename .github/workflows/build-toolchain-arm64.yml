@@ -26,6 +26,7 @@ on:
       - 'scripts/common/**'
       - 'scripts/bootstrap/**'
       - 'scripts/linux-arm64/**'
+      - 'scripts/ubuntu-16.04/**'
       - '.github/workflows/build-toolchain-arm64.yml'
 
 env:
@@ -233,7 +234,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/coca-toolchain-linux-aarch64.tar.xz
-          key: arm64-stage2-main-v1-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('scripts/common/**', 'scripts/linux-arm64/build-llvm-stage2.sh') }}
+          key: arm64-stage2-main-v2-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('scripts/common/versions.sh', 'scripts/common/source.sh', 'scripts/common/llvm-config-common.sh', 'scripts/common/llvm-config-stage2.sh', 'scripts/common/post-install.sh', 'scripts/linux-arm64/build-llvm-stage2.sh') }}
 
       - name: Pull container image
         if: steps.cache-stage2.outputs.cache-hit != 'true'
@@ -324,7 +325,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/coca-toolchain-p2996-linux-aarch64.tar.xz
-          key: arm64-stage2-p2996-v1-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('scripts/common/**', 'scripts/linux-arm64/build-llvm-stage2.sh') }}
+          key: arm64-stage2-p2996-v2-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('scripts/common/versions.sh', 'scripts/common/source.sh', 'scripts/common/llvm-config-common.sh', 'scripts/common/llvm-config-stage2.sh', 'scripts/common/post-install.sh', 'scripts/linux-arm64/build-llvm-stage2.sh') }}
 
       - name: Pull container image
         if: steps.cache-stage2-p2996.outputs.cache-hit != 'true'

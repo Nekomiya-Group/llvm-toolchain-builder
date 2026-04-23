@@ -83,16 +83,6 @@ main() {
     # 2. Compilation tests
     log "--- Compilation tests ---"
 
-    # Diagnostic: show config file status
-    local cfg="${TOOLCHAIN_DIR}/bin/clang.cfg"
-    if [[ -f "${cfg}" ]]; then
-        echo "  clang.cfg exists: $(cat "${cfg}" | grep -v '^#' | tr '\n' ' ')"
-    else
-        echo "  WARNING: clang.cfg not found at ${cfg}"
-    fi
-    echo "  clang -v dump:"
-    "${TOOLCHAIN_DIR}/bin/clang" -### /dev/null 2>&1 | grep -iE 'config|"-L' | head -5 | sed 's/^/    /' || true
-
     local tmpdir
     tmpdir=$(mktemp -d)
 

@@ -34,6 +34,9 @@ bundle_shared_libs() {
         "${BOOTSTRAP_PREFIX}/lib/libzstd.so"*
         "${BOOTSTRAP_PREFIX}/lib/libxml2.so"*
         "${BOOTSTRAP_PREFIX}/lib/libncursesw.so"*
+        "${BOOTSTRAP_PREFIX}/lib/libpanelw.so"*
+        "${BOOTSTRAP_PREFIX}/lib/libformw.so"*
+        "${BOOTSTRAP_PREFIX}/lib/libmenuw.so"*
         "${BOOTSTRAP_PREFIX}/lib/libedit.so"*
         "${BOOTSTRAP_PREFIX}/lib/libffi.so"*
         "${BOOTSTRAP_PREFIX}/lib/liblzma.so"*

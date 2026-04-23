@@ -242,7 +242,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/coca-toolchain-linux-x86_64.tar.xz
-          key: x64-stage2-main-v1-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('scripts/common/**', 'scripts/linux-x64/build-llvm-stage2.sh') }}
+          key: x64-stage2-main-v2-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('scripts/common/versions.sh', 'scripts/common/source.sh', 'scripts/common/llvm-config-common.sh', 'scripts/common/llvm-config-stage2.sh', 'scripts/common/post-install.sh', 'scripts/linux-x64/build-llvm-stage2.sh') }}
 
       - name: Pull container image
         if: steps.cache-stage2.outputs.cache-hit != 'true'
@@ -333,7 +333,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /tmp/coca-toolchain-p2996-linux-x86_64.tar.xz
-          key: x64-stage2-p2996-v1-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('scripts/common/**', 'scripts/linux-x64/build-llvm-stage2.sh') }}
+          key: x64-stage2-p2996-v2-llvm${{ env.LLVM_VERSION }}-${{ hashFiles('scripts/common/versions.sh', 'scripts/common/source.sh', 'scripts/common/llvm-config-common.sh', 'scripts/common/llvm-config-stage2.sh', 'scripts/common/post-install.sh', 'scripts/linux-x64/build-llvm-stage2.sh') }}
 
       - name: Pull container image
         if: steps.cache-stage2-p2996.outputs.cache-hit != 'true'
