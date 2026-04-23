@@ -34,7 +34,7 @@ on:
       - 'scripts/common/**'
       - 'scripts/bootstrap/**'
       - 'scripts/linux-x64/**'
-      - 'scripts/ubuntu-16.04/**'
+      - 'scripts/linux/**'
       - '.github/workflows/build-toolchain.yml'
 
 env:
@@ -433,7 +433,7 @@ jobs:
             -e TOOLCHAIN_DIR=/opt/coca-toolchain-linux-x86_64 \
             ${{ matrix.distro }} \
             bash -c '
-              bash /src/scripts/ubuntu-16.04/verify-portability.sh
+              bash /src/scripts/linux/verify-portability.sh
             '
 
   # ===========================================================================
@@ -476,5 +476,5 @@ jobs:
             -e TOOLCHAIN_DIR=/opt/coca-toolchain-p2996-linux-x86_64 \
             ${{ matrix.distro }} \
             bash -c '
-              bash /src/scripts/ubuntu-16.04/verify-portability.sh
+              bash /src/scripts/linux/verify-portability.sh
             '
