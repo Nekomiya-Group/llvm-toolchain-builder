@@ -173,14 +173,19 @@ jobs:
       - name: Package sysroots artifact
         run: |
           cd /opt/tools-cache
-          tar cJf /tmp/sysroots-${{ inputs.platform }}.tar.xz sysroots/
+          tar cJf /tmp/sysroots-${{ inputs.variant }}-${{ inputs.platform }}.tar.xz sysroots/
           ls -lh /tmp/sysroots-*.tar.xz
 
+      # Sysroots are variant-INDEPENDENT but we name the artifact by variant
+      # to avoid v4 same-name-twice errors when bundle-main and bundle-p2996
+      # run in parallel. The build cache (per-sysroot, indexed by script hash)
+      # is shared, so the second variant's sysroot job hits cache and finishes
+      # in <1 min.
       - name: Upload sysroots artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sysroots-${{ inputs.platform }}
-          path: /tmp/sysroots-${{ inputs.platform }}.tar.xz
+          name: sysroots-${{ inputs.variant }}-${{ inputs.platform }}
+          path: /tmp/sysroots-${{ inputs.variant }}-${{ inputs.platform }}.tar.xz
           retention-days: 7
           compression-level: 0
 
@@ -534,7 +539,7 @@ jobs:
       - name: Download sysroots artifact
         uses: actions/download-artifact@v4
         with:
-          name: sysroots-${{ inputs.platform }}
+          name: sysroots-${{ inputs.variant }}-${{ inputs.platform }}
           path: /tmp/dl-sysroots
 
       - name: Download tools artifact
@@ -560,7 +565,7 @@ jobs:
 
           # 2. Extract sysroots tarball: contents are sysroots/<triple>/...
           #    Extract directly into install_prefix to land at install_prefix/sysroots/<triple>/
-          tar -xJf "/tmp/dl-sysroots/sysroots-${{ inputs.platform }}.tar.xz" \
+          tar -xJf "/tmp/dl-sysroots/sysroots-${{ inputs.variant }}-${{ inputs.platform }}.tar.xz" \
               -C '${{ inputs.install-prefix }}'
 
           # 3. Extract tools tarball: contents are built/<tool>/...
