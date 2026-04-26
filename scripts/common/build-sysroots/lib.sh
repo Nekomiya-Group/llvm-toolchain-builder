@@ -10,6 +10,7 @@
 mkdir -p "${SYSROOTS_CACHE_DIR}" "${SYSROOTS_WORK_DIR}"
 
 log() { echo "===> $(date '+%H:%M:%S') $*"; }
+err() { echo "ERROR: $*" >&2; }
 
 # ── extract_deb DEB_FILE DEST ───────────────────────────────────────────────
 # Extract a Debian package into DEST using ar + tar (no dpkg required).
