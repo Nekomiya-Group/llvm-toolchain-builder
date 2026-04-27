@@ -17,8 +17,8 @@ VERSION="${TOOL_GLAB_VERSION}"
 PLATFORM="${PLATFORM:-linux-x86_64}"
 
 case "${PLATFORM}" in
-    linux-x86_64) ARCH_TAG="Linux_x86_64" ;;
-    linux-aarch64) ARCH_TAG="Linux_arm64" ;;
+    linux-x86_64) ARCH_TAG="linux_amd64" ;;
+    linux-aarch64) ARCH_TAG="linux_arm64" ;;
     *)
         echo "FATAL: unsupported PLATFORM=${PLATFORM} for glab" >&2
         exit 1

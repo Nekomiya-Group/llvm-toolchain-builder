@@ -14,19 +14,27 @@
 _patchelf_set_rpath() {
     local obj="$1"
     local rpath="$2"
+    # Capture before-state for logging on failure
+    local before
+    before=$(patchelf --print-rpath "${obj}" 2>/dev/null || true)
     # First remove any existing DT_RPATH / DT_RUNPATH so --set-rpath has a
     # clean slate. patchelf is idempotent here — removing a non-existent
     # rpath is a successful no-op in 0.18+.
     patchelf --remove-rpath "${obj}" 2>/dev/null || true
-    patchelf --set-rpath "${rpath}" "${obj}"
-    # Verify it took effect. If the dynamic section couldn't be enlarged
-    # (rare; happens on packed binaries), patchelf may silently drop the
-    # rpath. We MUST detect this — a missing rpath means the bundled libs
-    # won't be found at runtime.
+    if ! patchelf --set-rpath "${rpath}" "${obj}" 2>&1; then
+        echo "[relocate] FATAL: patchelf --set-rpath failed on ${obj}" >&2
+        return 1
+    fi
+    # Verify it took effect. Some patchelf versions on aarch64 with stripped
+    # PIE binaries can return success but fail to actually persist the rpath
+    # if the dynamic section can't be relocated. We MUST detect this.
     local actual
     actual=$(patchelf --print-rpath "${obj}" 2>/dev/null)
     if [[ "${actual}" != "${rpath}" ]]; then
-        echo "[relocate] FATAL: ${obj}: rpath set failed — wanted '${rpath}', got '${actual}'" >&2
+        echo "[relocate] FATAL: ${obj}: rpath persistence failed" >&2
+        echo "[relocate]        before='${before}' wanted='${rpath}' got='${actual}'" >&2
+        echo "[relocate]        readelf -d output:" >&2
+        readelf -d "${obj}" 2>&1 | grep -E 'PATH|NEEDED' | sed 's/^/    /' >&2
         return 1
     fi
 }
@@ -64,9 +72,13 @@ set_rpath_origin() {
     for sub in lib lib64; do
         if [[ -d "${tool_dir}/${sub}" ]]; then
             while IFS= read -r -d '' lib; do
-                if file "${lib}" 2>/dev/null | grep -q "ELF.*shared"; then
+                local ftype
+                ftype=$(file -b "${lib}" 2>/dev/null || echo '<unknown>')
+                if [[ "${ftype}" == ELF*shared* ]]; then
                     _patchelf_set_rpath "${lib}" '$ORIGIN'
                     count=$((count + 1))
+                else
+                    echo "[relocate] skip non-ELF lib: ${lib} (${ftype:0:60})"
                 fi
             done < <(find "${tool_dir}/${sub}" -type f \( -name "*.so" -o -name "*.so.*" \) -print0)
         fi
