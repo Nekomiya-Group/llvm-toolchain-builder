@@ -1,0 +1,60 @@
+name: Install PowerShell 7 (Windows ARM64)
+description: |
+  Bootstrap PowerShell 7 on Windows ARM64 hosted runners that do not ship it.
+
+  The partner-managed `windows-2022-arm-64core` image (Base Image for
+  Windows 11 Desktop) only includes Windows PowerShell 5.1; any `shell: pwsh`
+  step fails with `pwsh: command not found`. This action downloads the
+  official PowerShell 7 win-arm64 zip, extracts it to `C:\Program Files\
+  PowerShell\7`, and prepends that directory to `GITHUB_PATH`.
+
+  The action is idempotent: if `pwsh` is already on PATH (e.g. because the
+  runner image starts shipping it in a future update), the download is
+  skipped.
+
+inputs:
+  version:
+    description: PowerShell 7 version to install (must have a matching win-arm64.zip release asset)
+    required: false
+    default: '7.6.1'
+
+runs:
+  using: composite
+  steps:
+    - name: Install PowerShell 7
+      shell: powershell
+      env:
+        PWSH_VERSION: ${{ inputs.version }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        if (Get-Command pwsh -ErrorAction SilentlyContinue) {
+            $existing = & pwsh -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+            Write-Host "pwsh already on PATH (version $existing); skipping bootstrap"
+            exit 0
+        }
+
+        $version = $env:PWSH_VERSION
+        $url     = "https://github.com/PowerShell/PowerShell/releases/download/v$version/PowerShell-$version-win-arm64.zip"
+        $zip     = Join-Path $env:RUNNER_TEMP "pwsh-$version-arm64.zip"
+        $dst     = 'C:\Program Files\PowerShell\7'
+
+        Write-Host "Downloading PowerShell $version (win-arm64) ..."
+        Write-Host "  URL: $url"
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+
+        New-Item -ItemType Directory -Force -Path $dst | Out-Null
+        Write-Host "Extracting to $dst ..."
+        Expand-Archive -LiteralPath $zip -DestinationPath $dst -Force
+        Remove-Item -LiteralPath $zip -Force
+
+        # Persist for subsequent steps in the same job.
+        Add-Content -Path $env:GITHUB_PATH -Value $dst
+
+        $pwshExe = Join-Path $dst 'pwsh.exe'
+        if (-not (Test-Path -LiteralPath $pwshExe)) {
+            throw "pwsh.exe not found at $pwshExe after extraction"
+        }
+        $installed = & $pwshExe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
+        Write-Host "Installed PowerShell $installed at $dst"
