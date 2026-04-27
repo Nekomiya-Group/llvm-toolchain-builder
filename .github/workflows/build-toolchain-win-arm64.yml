@@ -26,6 +26,7 @@ on:
       - 'scripts/common/**'
       - 'scripts/windows-arm64/**'
       - '.github/workflows/build-toolchain-win-arm64.yml'
+      - '.github/actions/install-pwsh-arm64/**'
 
 env:
   LLVM_VERSION: ${{ github.event.inputs.llvm_version || '21.1.1' }}
