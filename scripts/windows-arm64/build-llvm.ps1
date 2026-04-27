@@ -1,0 +1,526 @@
+#Requires -Version 7.0
+# =============================================================================
+# LLVM Windows ARM64 Build — full self-hosted toolchain for distribution.
+#
+# Builds a portable LLVM toolchain on Windows ARM64 (aarch64) using MSVC
+# (cl.exe targeting arm64 native) as the bootstrap compiler. Produces a
+# self-contained package that runs on any Windows 10/11 ARM64 machine
+# without Visual Studio installed.
+#
+# Supports two variants:
+#   VARIANT=main   — official LLVM release (all projects + runtimes)
+#   VARIANT=p2996  — Bloomberg clang-p2996 fork (C++ reflection)
+#
+# Environment variables:
+#   LLVM_VERSION   — LLVM version to build (default: 21.1.1)
+#   VARIANT        — main or p2996 (default: main)
+#   INSTALL_PREFIX — installation directory
+#   NPROC          — parallel build jobs
+#   PYTHON_DIR     — Python installation for LLDB bindings
+#   SWIG_DIR       — SWIG installation directory
+# =============================================================================
+[CmdletBinding()]
+param()
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+# ── Configuration ─────────────────────────────────────────────────────────────
+$LLVM_VERSION   = if ($env:LLVM_VERSION)   { $env:LLVM_VERSION }   else { '21.1.1' }
+$VARIANT        = if ($env:VARIANT)        { $env:VARIANT }        else { 'main' }
+$INSTALL_PREFIX = if ($env:INSTALL_PREFIX)  { $env:INSTALL_PREFIX } else { 'C:\coca-toolchain' }
+$NPROC          = if ($env:NPROC)          { [int]$env:NPROC }     else { $env:NUMBER_OF_PROCESSORS }
+$LLVM_SRC       = if ($env:LLVM_SRC)       { $env:LLVM_SRC }      else { 'C:\llvm-src' }
+$P2996_SRC      = if ($env:P2996_SRC)      { $env:P2996_SRC }     else { 'C:\llvm-p2996' }
+$BUILD_DIR      = if ($env:BUILD_DIR)      { $env:BUILD_DIR }     else { 'C:\b' }  # Short path to avoid MAX_PATH
+$PYTHON_DIR     = if ($env:PYTHON_DIR)     { $env:PYTHON_DIR }    else { '' }
+$SWIG_DIR       = if ($env:SWIG_DIR)       { $env:SWIG_DIR }     else { '' }
+
+# CMake interprets backslash as escape in -D string values.
+function ToForwardSlash([string]$p) { return $p.Replace('\', '/') }
+
+function Log($msg) {
+    Write-Host "===> $(Get-Date -Format 'HH:mm:ss') $msg" -ForegroundColor Cyan
+}
+
+function LogError($msg) {
+    Write-Host "===> $(Get-Date -Format 'HH:mm:ss') ERROR: $msg" -ForegroundColor Red
+}
+
+# ── 0. Validate MSVC environment ─────────────────────────────────────────────
+function Invoke-VsDevShell {
+    Log "Setting up MSVC environment..."
+
+    # Find vswhere to locate VS installation
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere)) {
+        throw "vswhere.exe not found — Visual Studio is not installed"
+    }
+
+    $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+    if (-not $vsPath) {
+        throw "No Visual Studio installation with ARM64 C++ tools found"
+    }
+
+    Log "Found Visual Studio at: $vsPath"
+
+    # Import VS environment into current PowerShell session
+    $vcvarsall = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
+    if (-not (Test-Path $vcvarsall)) {
+        throw "vcvarsall.bat not found at $vcvarsall"
+    }
+
+    # Execute vcvarsall.bat and capture environment variables
+    $envBefore = @{}
+    Get-ChildItem env: | ForEach-Object { $envBefore[$_.Name] = $_.Value }
+
+    $tempFile = [System.IO.Path]::GetTempFileName()
+    cmd /c "`"$vcvarsall`" arm64 >nul 2>&1 && set > `"$tempFile`""
+
+    Get-Content $tempFile | ForEach-Object {
+        if ($_ -match '^([^=]+)=(.*)$') {
+            $name = $matches[1]
+            $value = $matches[2]
+            if ($envBefore[$name] -ne $value) {
+                Set-Item -Path "env:$name" -Value $value
+            }
+        }
+    }
+    Remove-Item $tempFile -ErrorAction SilentlyContinue
+
+    # Verify critical tools (ARM64 host uses armasm64 instead of ml64)
+    $armasm = Get-Command armasm64.exe -ErrorAction SilentlyContinue
+    if (-not $armasm) { throw "armasm64.exe not found after vcvarsall.bat — ARM64 MASM is required" }
+    Log "armasm64.exe: $($armasm.Source)"
+
+    $rc = Get-Command rc.exe -ErrorAction SilentlyContinue
+    if (-not $rc) { throw "rc.exe not found after vcvarsall.bat — Windows SDK RC is required" }
+    Log "rc.exe: $($rc.Source)"
+
+    # Detect MSVC version for log
+    $clExe = Get-Command cl.exe -ErrorAction SilentlyContinue
+    if ($clExe) { Log "cl.exe: $($clExe.Source)" }
+
+    # Resolve lib.exe to absolute path (used for CMAKE_AR)
+    $libExe = Get-Command lib.exe -ErrorAction SilentlyContinue
+    if (-not $libExe) { throw "lib.exe not found after vcvarsall.bat" }
+    $script:MSVC_LIB_EXE = $libExe.Source
+    Log "lib.exe: $($script:MSVC_LIB_EXE)"
+
+    # Resolve link.exe to absolute path (used for CMAKE_LINKER fallback)
+    $linkExe = Get-Command link.exe -ErrorAction SilentlyContinue
+    if ($linkExe) {
+        $script:MSVC_LINK_EXE = $linkExe.Source
+        Log "link.exe: $($script:MSVC_LINK_EXE)"
+    }
+}
+
+# ── 1. Obtain source code ────────────────────────────────────────────────────
+function Get-LLVMSource {
+    # IMPORTANT: Every command that produces stdout MUST be piped to Out-Null
+    # or captured, otherwise PowerShell adds it to the function return value.
+    switch ($VARIANT) {
+        'main' {
+            if (Test-Path (Join-Path $LLVM_SRC 'llvm')) {
+                Log "Using existing LLVM source at $LLVM_SRC"
+            } else {
+                Log "Cloning LLVM $LLVM_VERSION (tag: llvmorg-$LLVM_VERSION)..."
+                $null = & git clone --depth 1 --branch "llvmorg-$LLVM_VERSION" "https://github.com/llvm/llvm-project.git" $LLVM_SRC 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
+                Log "LLVM source cloned to $LLVM_SRC"
+            }
+            return $LLVM_SRC
+        }
+        'p2996' {
+            if (Test-Path (Join-Path $P2996_SRC 'llvm')) {
+                Log "Using existing p2996 source at $P2996_SRC"
+            } else {
+                Log "Cloning clang-p2996 (fork with LLDB fix)..."
+                $null = & git clone --depth 1 --branch p2996 "https://github.com/nekomiya-kasane/clang-p2996.git" $P2996_SRC 2>&1
+                if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
+            }
+            return $P2996_SRC
+        }
+        default {
+            throw "Unknown variant '$VARIANT'. Use 'main' or 'p2996'."
+        }
+    }
+}
+
+# ── 2. Configure Python & SWIG for LLDB ─────────────────────────────────────
+function Find-PythonForLLDB {
+    if ($PYTHON_DIR -and (Test-Path (Join-Path $PYTHON_DIR 'python.exe'))) {
+        return $PYTHON_DIR
+    }
+    # Try to find Python 3.14 from GitHub Actions cached tools
+    $pyExe = Get-Command python.exe -ErrorAction SilentlyContinue
+    if ($pyExe) {
+        $pyDir = Split-Path $pyExe.Source
+        Log "Found Python at: $pyDir"
+        return $pyDir
+    }
+    Log "WARNING: Python not found — LLDB Python bindings will be disabled"
+    return $null
+}
+
+function Find-SWIG {
+    if ($SWIG_DIR -and (Test-Path (Join-Path $SWIG_DIR 'swig.exe'))) {
+        return (Join-Path $SWIG_DIR 'swig.exe')
+    }
+    $swigExe = Get-Command swig.exe -ErrorAction SilentlyContinue
+    if ($swigExe) {
+        Log "Found SWIG at: $($swigExe.Source)"
+        return $swigExe.Source
+    }
+    Log "WARNING: SWIG not found — LLDB Python bindings will be disabled"
+    return $null
+}
+
+# ── 3. Build LLVM ────────────────────────────────────────────────────────────
+function Build-LLVM {
+    param([string]$SourceDir)
+
+    Log "Configuring LLVM (variant=$VARIANT)..."
+
+    New-Item -ItemType Directory -Path $BUILD_DIR -Force | Out-Null
+
+    # Projects and runtimes — unified for both variants
+    # bolt is Linux-only (ELF binary optimizer), excluded on Windows
+    $projects = 'clang;lld;clang-tools-extra;lldb;mlir;polly;flang'
+    $runtimes = 'compiler-rt;flang-rt;openmp'
+    $targets  = 'X86;AArch64;ARM;WebAssembly;RISCV;NVPTX;AMDGPU;BPF'
+
+    # Detect Python & SWIG for LLDB
+    $pyDir = Find-PythonForLLDB
+    $swigExe = Find-SWIG
+    $enablePython = ($null -ne $pyDir) -and ($null -ne $swigExe)
+
+    $cmakeArgs = @(
+        '-G', 'Ninja',
+        '-S', (ToForwardSlash (Join-Path $SourceDir 'llvm')),
+        '-B', (ToForwardSlash $BUILD_DIR),
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DCMAKE_INSTALL_PREFIX=$(ToForwardSlash $INSTALL_PREFIX)",
+        # Use clang-cl from the runner's LLVM 20 if available, otherwise MSVC cl.exe
+        "-DCMAKE_C_COMPILER=cl.exe",
+        "-DCMAKE_CXX_COMPILER=cl.exe",
+        "-DCMAKE_AR=$(ToForwardSlash $script:MSVC_LIB_EXE)",
+        "-DLLVM_USE_LINKER=lld",
+        "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDLL",
+        # Projects
+        "-DLLVM_ENABLE_PROJECTS=$projects",
+        "-DLLVM_ENABLE_RUNTIMES=$runtimes",
+        "-DLLVM_TARGETS_TO_BUILD=$targets",
+        # Feature flags
+        '-DLLVM_INSTALL_UTILS=ON',
+        '-DLLVM_ENABLE_ASSERTIONS=OFF',
+        '-DLLVM_INCLUDE_TESTS=OFF',
+        '-DLLVM_INCLUDE_BENCHMARKS=OFF',
+        '-DLLVM_INCLUDE_EXAMPLES=OFF',
+        '-DLLVM_INCLUDE_DOCS=OFF',
+        '-DLLVM_ENABLE_BINDINGS=ON',
+        '-DLLVM_INSTALL_TOOLCHAIN_ONLY=OFF',
+        # Optional deps — OFF for maximum portability
+        '-DLLVM_ENABLE_ZLIB=OFF',
+        '-DLLVM_ENABLE_ZSTD=OFF',
+        '-DLLVM_ENABLE_LIBXML2=OFF',
+        '-DLLVM_ENABLE_TERMINFO=OFF',
+        '-DLLVM_ENABLE_LIBEDIT=OFF',
+        # DIA SDK requires atlbase.h which may not be available
+        '-DLLVM_ENABLE_DIA_SDK=OFF',
+        # Clang defaults — portable tools should not assume host's runtime
+        '-DCLANG_ENABLE_STATIC_ANALYZER=ON',
+        '-DCLANG_ENABLE_ARCMT=ON',
+        # LLDB
+        "-DLLDB_ENABLE_CURSES=OFF",
+        "-DLLDB_ENABLE_LIBEDIT=OFF",
+        "-DLLDB_ENABLE_LZMA=OFF",
+        "-DLLDB_ENABLE_LIBXML2=OFF",
+        "-DLLDB_ENABLE_LUA=OFF",
+        "-DLLDB_ENABLE_FBSDVMCORE=OFF",
+        # Polly — no GPU offload
+        '-DPOLLY_ENABLE_GPGPU_CODEGEN=OFF',
+        # compiler-rt — full suite on Windows
+        '-DCOMPILER_RT_BUILD_SANITIZERS=ON',
+        '-DCOMPILER_RT_BUILD_XRAY=OFF',  # XRay is Linux/macOS only
+        '-DCOMPILER_RT_BUILD_LIBFUZZER=ON',
+        '-DCOMPILER_RT_BUILD_PROFILE=ON',
+        '-DCOMPILER_RT_BUILD_MEMPROF=OFF',  # MemProf is Linux-only
+        '-DCOMPILER_RT_BUILD_ORC=ON',
+        # OpenMP RTM fix (critical — see llvm-full-build-guide.md §5.3)
+        '-DRUNTIMES_CMAKE_ARGS=-DLIBOMP_HAVE_RTM_INTRINSICS=TRUE;-DLIBOMP_HAVE_IMMINTRIN_H=TRUE;-DLIBOMP_HAVE_ATTRIBUTE_RTM=TRUE'
+    )
+
+    # LLDB Python bindings
+    if ($enablePython) {
+        $pyExe = Join-Path $pyDir 'python.exe'
+        $pyVer = & $pyExe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        $pyVerMajMin = $pyVer.Trim()
+        $pyInclude = & $pyExe -c "import sysconfig; print(sysconfig.get_path('include'))"
+        $pyInclude = $pyInclude.Trim()
+        $pyLibDir = & $pyExe -c "import sysconfig; print(sysconfig.get_config_var('installed_base'))"
+        $pyLibDir = $pyLibDir.Trim()
+        $pyLib = Join-Path $pyLibDir "libs\python$($pyVerMajMin.Replace('.',''))`.lib"
+        $pyPureVer = $pyVerMajMin.Replace('.','')
+
+        Log "LLDB Python: $pyExe (version $pyVerMajMin)"
+        Log "LLDB Python include: $pyInclude"
+        Log "LLDB Python lib: $pyLib"
+
+        $cmakeArgs += @(
+            '-DLLDB_ENABLE_PYTHON=ON',
+            "-DPython3_EXECUTABLE=$(ToForwardSlash $pyExe)",
+            "-DPython3_INCLUDE_DIR=$(ToForwardSlash $pyInclude)",
+            "-DPython3_LIBRARY=$(ToForwardSlash $pyLib)",
+            "-DSWIG_EXECUTABLE=$(ToForwardSlash $swigExe)",
+            "-DLLDB_PYTHON_HOME=../tools/python",
+            "-DLLDB_PYTHON_EXT_SUFFIX=.cp${pyPureVer}-win_arm64.pyd",
+            # MLIR Python bindings (requires nanobind; install with: pip install nanobind)
+            '-DMLIR_ENABLE_BINDINGS_PYTHON=ON'
+        )
+    } else {
+        $cmakeArgs += '-DLLDB_ENABLE_PYTHON=OFF'
+    }
+
+    # Configure
+    Log "Running cmake configure with $($cmakeArgs.Count) arguments..."
+    & cmake @cmakeArgs
+    if ($LASTEXITCODE -ne 0) { throw "CMake configure failed with exit code $LASTEXITCODE" }
+
+    # Build
+    Log "Building LLVM (this will take a long time, -j$NPROC)..."
+    & cmake --build $BUILD_DIR -- "-j$NPROC"
+    if ($LASTEXITCODE -ne 0) { throw "CMake build failed with exit code $LASTEXITCODE" }
+
+    # Install
+    Log "Installing LLVM to $INSTALL_PREFIX..."
+    & cmake --install $BUILD_DIR
+    if ($LASTEXITCODE -ne 0) { throw "CMake install failed with exit code $LASTEXITCODE" }
+
+    Log "Build and install complete"
+}
+
+# ── 4. Post-install: bundle dependencies for portability ─────────────────────
+function Invoke-PostInstall {
+    Log "Post-install: bundling dependencies for portability..."
+
+    $binDir = Join-Path $INSTALL_PREFIX 'bin'
+
+    # 4a. Bundle MSVC Runtime DLLs (vcruntime140.dll, msvcp140.dll, etc.)
+    # These are required when building with /MD (dynamic CRT).
+    # On a blank machine without VS Redistributable, these must be present.
+    $vcRedistDlls = @(
+        'vcruntime140.dll',
+        'vcruntime140_1.dll',
+        'msvcp140.dll',
+        'msvcp140_1.dll',
+        'msvcp140_2.dll',
+        'concrt140.dll',
+        'vccorlib140.dll'
+    )
+
+    # Find the VC redist directory (ARM64-native VC runtime)
+    $vcToolsRedist = $env:VCToolsRedistDir
+    if ($vcToolsRedist) {
+        $redistArm64 = Join-Path $vcToolsRedist 'arm64\Microsoft.VC143.CRT'
+        if (-not (Test-Path $redistArm64)) {
+            # Try VC142
+            $redistArm64 = Join-Path $vcToolsRedist 'arm64\Microsoft.VC142.CRT'
+        }
+        if (Test-Path $redistArm64) {
+            foreach ($dll in $vcRedistDlls) {
+                $src = Join-Path $redistArm64 $dll
+                if (Test-Path $src) {
+                    Copy-Item $src -Destination $binDir -Force
+                    Log "  Bundled: $dll"
+                }
+            }
+        } else {
+            Log "WARNING: VC redist directory not found at $redistArm64"
+        }
+    } else {
+        Log "WARNING: VCToolsRedistDir not set — VC runtime DLLs not bundled"
+    }
+
+    # 4b. Bundle Universal CRT DLLs (ucrtbase.dll) — usually present on Win10+
+    # but for Win10 LTSC/IoT, it's safer to bundle them.
+    $ucrtDlls = @('ucrtbase.dll')
+    $winSdkBin = "${env:WindowsSdkVerBinPath}arm64\ucrt"
+    if (-not (Test-Path $winSdkBin)) {
+        $winSdkBin = "C:\Windows\System32"
+    }
+    foreach ($dll in $ucrtDlls) {
+        $src = Join-Path $winSdkBin $dll
+        if (Test-Path $src) {
+            Copy-Item $src -Destination $binDir -Force
+            Log "  Bundled: $dll (UCRT)"
+        }
+    }
+
+    # 4c. Bundle Python for LLDB (if enabled)
+    $pyDir = Find-PythonForLLDB
+    if ($pyDir) {
+        Log "Bundling Python for LLDB..."
+        $pyDest = Join-Path $INSTALL_PREFIX 'tools\python'
+        New-Item -ItemType Directory -Path $pyDest -Force | Out-Null
+
+        # Copy Python installation (trimmed)
+        $pyExe = Join-Path $pyDir 'python.exe'
+        $pyVer = & $pyExe -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        $pyVerMajMin = $pyVer.Trim()
+        $pyPureVer = $pyVerMajMin.Replace('.','')
+
+        # Copy core files
+        Copy-Item (Join-Path $pyDir 'python.exe') -Destination $pyDest -Force
+        Copy-Item (Join-Path $pyDir 'pythonw.exe') -Destination $pyDest -Force -ErrorAction SilentlyContinue
+        Copy-Item (Join-Path $pyDir "python${pyPureVer}.dll") -Destination $pyDest -Force
+        Copy-Item (Join-Path $pyDir 'python3.dll') -Destination $pyDest -Force -ErrorAction SilentlyContinue
+
+        # Also copy python DLLs to bin/ for liblldb.dll
+        Copy-Item (Join-Path $pyDir "python${pyPureVer}.dll") -Destination $binDir -Force
+        Copy-Item (Join-Path $pyDir 'python3.dll') -Destination $binDir -Force -ErrorAction SilentlyContinue
+
+        # Copy standard library
+        $pyLibSrc = Join-Path $pyDir 'Lib'
+        if (Test-Path $pyLibSrc) {
+            $pyLibDest = Join-Path $pyDest 'Lib'
+            Copy-Item $pyLibSrc -Destination $pyLibDest -Recurse -Force
+
+            # Remove unnecessary directories to save space
+            $removeDirs = @('test', 'unittest\test', 'lib2to3\tests', 'tkinter',
+                            'turtledemo', 'idlelib', 'ensurepip\_bundled', '__pycache__')
+            foreach ($d in $removeDirs) {
+                $path = Join-Path $pyLibDest $d
+                if (Test-Path $path) {
+                    Remove-Item $path -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        # Copy DLLs directory (compiled C extensions)
+        $pyDllsSrc = Join-Path $pyDir 'DLLs'
+        if (Test-Path $pyDllsSrc) {
+            Copy-Item $pyDllsSrc -Destination (Join-Path $pyDest 'DLLs') -Recurse -Force
+        }
+
+        Log "Python bundled to $pyDest"
+    }
+
+    # 4d. Install Clang Python bindings (pure Python files from source tree)
+    $sourceDir = if ($VARIANT -eq 'p2996') { $P2996_SRC } else { $LLVM_SRC }
+    $clangBindings = Join-Path $sourceDir 'clang\bindings\python\clang'
+    if (Test-Path $clangBindings) {
+        $pyDir2 = Find-PythonForLLDB
+        if ($pyDir2) {
+            $pyExe2 = Join-Path $pyDir2 'python.exe'
+            $pyVer2 = (& $pyExe2 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')").Trim()
+            $dest = Join-Path $INSTALL_PREFIX "lib\python$pyVer2\site-packages\clang"
+            New-Item -ItemType Directory -Path $dest -Force | Out-Null
+            Copy-Item "$clangBindings\*" -Destination $dest -Recurse -Force
+            Log "Clang Python bindings installed to $dest"
+        }
+    }
+
+    Log "Post-install complete"
+}
+
+# ── 5. Create archive ────────────────────────────────────────────────────────
+function New-Archive {
+    $archiveName = switch ($VARIANT) {
+        'main'  { 'coca-toolchain-win-arm64' }
+        'p2996' { 'coca-toolchain-p2996-win-arm64' }
+    }
+
+    $archivePath = "C:\$archiveName.zip"
+    Log "Creating archive: $archivePath"
+
+    # Rename install dir to match archive name so the zip root has a good name.
+    # Rename-Item takes a leaf-name, not a full path.
+    $archiveDir = "C:\$archiveName"
+    $renamed = $false
+    if ($INSTALL_PREFIX -ne $archiveDir) {
+        if (Test-Path $archiveDir) {
+            Remove-Item $archiveDir -Recurse -Force
+        }
+        Rename-Item -Path $INSTALL_PREFIX -NewName $archiveName
+        $renamed = $true
+    }
+
+    # Use 7z for compression — Compress-Archive has a 2 GB limit and is slow.
+    # 7z is pre-installed on GitHub Actions Windows runners.
+    $sevenZip = Get-Command 7z.exe -ErrorAction SilentlyContinue
+    if ($sevenZip) {
+        if (Test-Path $archivePath) { Remove-Item $archivePath -Force }
+        # Run from parent dir so zip root entry is just the dir name, not the full path
+        $parentDir = Split-Path $archiveDir -Parent
+        $leafName = Split-Path $archiveDir -Leaf
+        Push-Location $parentDir
+        try {
+            & 7z a -tzip -mx=5 -mmt=on $archivePath ".\$leafName" | Select-Object -Last 5
+            if ($LASTEXITCODE -ne 0) { throw "7z archive creation failed" }
+        } finally {
+            Pop-Location
+        }
+    } else {
+        Log "WARNING: 7z not found, falling back to Compress-Archive (slow, 2GB limit)"
+        Compress-Archive -Path $archiveDir -DestinationPath $archivePath -Force -CompressionLevel Optimal
+    }
+
+    # Restore original name
+    if ($renamed) {
+        Rename-Item -Path $archiveDir -NewName (Split-Path $INSTALL_PREFIX -Leaf)
+    }
+
+    Log "Archive created: $archivePath"
+    $size = (Get-Item $archivePath).Length / 1MB
+    Log "Archive size: $([math]::Round($size, 1)) MB"
+}
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+function Main {
+    Log "LLVM Windows ARM64 build starting"
+    Log "  VARIANT:          $VARIANT"
+    Log "  LLVM_VERSION:     $LLVM_VERSION"
+    Log "  INSTALL_PREFIX:   $INSTALL_PREFIX"
+    Log "  BUILD_DIR:        $BUILD_DIR"
+    Log "  NPROC:            $NPROC"
+
+    # Step 0: Setup MSVC environment
+    Invoke-VsDevShell
+
+    # Step 1: Get source
+    $sourceDir = Get-LLVMSource
+    Log "Source directory: $sourceDir"
+
+    # Step 2: Build
+    Build-LLVM -SourceDir $sourceDir
+
+    # Step 3: Post-install
+    Invoke-PostInstall
+
+    # Step 4: Create archive (skip when used as Stage 1 — workflow archives separately)
+    if ($env:SKIP_ARCHIVE -ne 'true') {
+        New-Archive
+    } else {
+        Log "Skipping archive (SKIP_ARCHIVE=true)"
+    }
+
+    # Step 5: Quick verification
+    Log "Quick verification:"
+    $clang = Join-Path $INSTALL_PREFIX 'bin\clang.exe'
+    if (Test-Path $clang) {
+        & $clang --version
+    }
+    $lld = Join-Path $INSTALL_PREFIX 'bin\lld-link.exe'
+    if (Test-Path $lld) {
+        & $lld --version 2>&1 | Select-Object -First 1
+    }
+    $lldb = Join-Path $INSTALL_PREFIX 'bin\lldb.exe'
+    if (Test-Path $lldb) {
+        & $lldb --version
+    }
+
+    Log "LLVM Windows ARM64 build complete!"
+}
+
+Main
