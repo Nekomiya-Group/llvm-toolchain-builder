@@ -93,6 +93,20 @@ bundle_gcc_runtime_into_tool "${TOOL_DIR}" libgcc_s libstdc++
 #    like '$ORIGIN/../lib' for libstd.so are preserved).
 add_rpath_to_lib_dir "${TOOL_DIR}" "${TOOL_DIR}/lib"
 
+# 7b. Per-toolchain rpath: each rustup toolchain's own top-level lib/ hosts
+#     the Rust-versioned libLLVM.so.21.1-rust-X-Y-stable (used by
+#     rust-objcopy / rust-lld / rust-readobj living deep under
+#     rustlib/$ARCH/bin/). The aarch64 upstream Rust release does NOT
+#     embed an rpath in those nested binaries, so without this pass ldd
+#     cannot resolve libLLVM and verify_no_forbidden_deps reports it as
+#     unresolved. add_rpath_to_lib_dir is idempotent and preserves any
+#     pre-existing rpath, so binaries end up with both rpaths chained:
+#       $ORIGIN/<rel-to-toolchain-lib>:$ORIGIN/<rel-to-top-rust-lib>:<orig>
+for toolchain_dir in "${RUSTUP_HOME}/toolchains/"*/; do
+    [[ -d "${toolchain_dir}lib" ]] || continue
+    add_rpath_to_lib_dir "${toolchain_dir%/}" "${toolchain_dir%/}/lib"
+done
+
 # 8. Strip toolchain binaries to save space (~50MB saved)
 strip_binaries "${TOOL_DIR}"
 
