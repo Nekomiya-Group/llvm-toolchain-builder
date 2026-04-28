@@ -17,7 +17,9 @@ name: Bundle Toolchain (reusable)
 #   - platform           linux-x86_64 / linux-aarch64
 #   - variant            main / p2996
 #   - llvm-version       e.g. 21.1.1
-#   - runner             ubuntu-latest / ubuntu-24.04-arm
+#   - runs_on            JSON-encoded string: '"ubuntu-24.04-64core"' (label) or
+#                        '{"group":"ubuntu-x64"}' (group). Caller is expected
+#                        to compose this from runner_size dispatch input.
 #   - image              docker image for tool builds (matches Stage 2 image)
 
 on:
@@ -32,7 +34,11 @@ on:
       llvm-version:
         required: true
         type: string
-      runner:
+      runs_on:
+        description: |
+          JSON-encoded runs-on value. Either a JSON string '"<label>"' for direct
+          label match, or a JSON object '{"group":"<name>"}' for runner-group
+          membership match (any idle runner in the group wins).
         required: true
         type: string
       image:
@@ -57,7 +63,7 @@ jobs:
   # ===========================================================================
   bundle-sysroots:
     name: Bundle Sysroots (${{ inputs.platform }})
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -197,7 +203,7 @@ jobs:
   # ===========================================================================
   bundle-tools:
     name: Bundle Tools (${{ inputs.variant }} / ${{ inputs.platform }})
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 360
     steps:
       - name: Checkout
@@ -527,7 +533,7 @@ jobs:
   assemble:
     name: Assemble Toolchain (${{ inputs.variant }} / ${{ inputs.platform }})
     needs: [bundle-sysroots, bundle-tools]
-    runs-on: ${{ inputs.runner }}
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 30
     steps:
       - name: Checkout
