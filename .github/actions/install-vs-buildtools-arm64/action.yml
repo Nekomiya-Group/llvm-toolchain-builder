@@ -3,11 +3,11 @@ description: |
   Bootstrap MSVC + Windows SDK on Windows ARM64 hosted runners that ship a
   minimal partner-managed image without Visual Studio.
 
-  Installs VS 2022 Build Tools with the minimum component set required by
-  `scripts/windows-arm64/build-llvm.ps1` and `build-llvm-stage2.ps1`:
+  Installs VS 2022 Build Tools with the VCTools workload + the recommended
+  components, which on an ARM64 host pulls in:
 
-    - Microsoft.VisualStudio.Component.VC.Tools.ARM64    (cl.exe, armasm64.exe, lib.exe, link.exe)
-    - Microsoft.VisualStudio.Component.Windows11SDK.22621 (rc.exe, headers, libs)
+    - cl.exe, armasm64.exe, lib.exe, link.exe (native ARM64 toolchain)
+    - rc.exe + the latest Windows SDK (headers, import libs)
 
   After installation `vswhere.exe` is present at its canonical global path
   (`C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe`),
@@ -17,19 +17,17 @@ description: |
   Idempotent: if `vswhere -latest -requires VC.Tools.ARM64` already reports
   an installation, the download/install is skipped.
 
-inputs:
-  windows-sdk:
-    description: Windows SDK component id (default Win 11 22H2 SDK)
-    required: false
-    default: 'Microsoft.VisualStudio.Component.Windows11SDK.22621'
+  We deliberately do NOT pass extra component IDs (e.g. a specific
+  Windows11SDK.<build> id) — those vary across VS releases and an unknown
+  id makes the bootstrapper exit 87 (ERROR_INVALID_PARAMETER) before any
+  install happens. Letting `--includeRecommended` pick the SDK is both
+  more robust and forward-compatible.
 
 runs:
   using: composite
   steps:
     - name: Install VS 2022 Build Tools (ARM64)
       shell: pwsh
-      env:
-        WIN_SDK_COMPONENT: ${{ inputs.windows-sdk }}
       run: |
         $ErrorActionPreference = 'Stop'
 
@@ -44,27 +42,20 @@ runs:
 
         $url       = 'https://aka.ms/vs/17/release/vs_buildtools.exe'
         $installer = Join-Path $env:RUNNER_TEMP 'vs_buildtools.exe'
-        $logDir    = Join-Path $env:RUNNER_TEMP 'vs-install-logs'
-        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
         Write-Host "Downloading VS 2022 Build Tools installer ..."
         Write-Host "  URL: $url"
         & curl.exe --fail --location --retry 5 --retry-delay 2 --retry-all-errors --silent --show-error --output $installer $url
         if ($LASTEXITCODE -ne 0) { throw "curl failed (exit $LASTEXITCODE) downloading $url" }
 
-        $components = @(
-            'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
-            $env:WIN_SDK_COMPONENT
-        )
         $iargs = @(
             '--quiet', '--wait', '--norestart', '--nocache',
-            '--installPath', 'C:\BuildTools',
-            '--logFilesDirectory', $logDir
+            '--add', 'Microsoft.VisualStudio.Workload.VCTools',
+            '--includeRecommended'
         )
-        foreach ($c in $components) { $iargs += @('--add', $c) }
 
         Write-Host "Installing VS 2022 Build Tools (~5-10 min)"
-        Write-Host ("  components: " + ($components -join ', '))
+        Write-Host ("  args: " + ($iargs -join ' '))
         $start = Get-Date
         $proc  = Start-Process -FilePath $installer -ArgumentList $iargs -Wait -PassThru -NoNewWindow
         $mins  = ((Get-Date) - $start).TotalMinutes
@@ -72,10 +63,19 @@ runs:
 
         # 0 = success; 3010 = success but reboot pending (we don't reboot CI runners)
         if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
-            Write-Host "::group::Last vslogs lines"
-            Get-ChildItem -LiteralPath $logDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-                Write-Host "----- $($_.FullName) -----"
-                Get-Content -LiteralPath $_.FullName -Tail 80 -ErrorAction SilentlyContinue
+            # Bootstrapper writes its own diagnostic logs to %TEMP%\dd_*.log
+            # (named after the dynamic guid Setup creates). We dump every
+            # such file we can find — the actual install logs are inside
+            # %ProgramData%\Microsoft\VisualStudio\Packages\_Instances\* and
+            # %TEMP%\dd_setup_*_errors.log when bootstrap-stage failures occur.
+            Write-Host "::group::vs_buildtools.exe diagnostic logs"
+            $candidates = @()
+            $candidates += Get-ChildItem -Path $env:TEMP -Filter 'dd_*.log' -ErrorAction SilentlyContinue
+            $candidates += Get-ChildItem -Path $env:RUNNER_TEMP -Filter 'dd_*.log' -ErrorAction SilentlyContinue -Recurse
+            $candidates += Get-ChildItem -Path "$env:ProgramData\Microsoft\VisualStudio\Packages\_Instances" -Recurse -Filter '*.log' -ErrorAction SilentlyContinue
+            foreach ($f in $candidates) {
+                Write-Host "----- $($f.FullName) -----"
+                Get-Content -LiteralPath $f.FullName -Tail 100 -ErrorAction SilentlyContinue
             }
             Write-Host "::endgroup::"
             throw "vs_buildtools.exe failed with exit code $($proc.ExitCode)"
