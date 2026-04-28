@@ -1,0 +1,92 @@
+name: Install Visual Studio 2022 Build Tools (Windows ARM64)
+description: |
+  Bootstrap MSVC + Windows SDK on Windows ARM64 hosted runners that ship a
+  minimal partner-managed image without Visual Studio.
+
+  Installs VS 2022 Build Tools with the minimum component set required by
+  `scripts/windows-arm64/build-llvm.ps1` and `build-llvm-stage2.ps1`:
+
+    - Microsoft.VisualStudio.Component.VC.Tools.ARM64    (cl.exe, armasm64.exe, lib.exe, link.exe)
+    - Microsoft.VisualStudio.Component.Windows11SDK.22621 (rc.exe, headers, libs)
+
+  After installation `vswhere.exe` is present at its canonical global path
+  (`C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe`),
+  so the existing `Invoke-VsDevShell` helper in the build scripts works
+  without modification.
+
+  Idempotent: if `vswhere -latest -requires VC.Tools.ARM64` already reports
+  an installation, the download/install is skipped.
+
+inputs:
+  windows-sdk:
+    description: Windows SDK component id (default Win 11 22H2 SDK)
+    required: false
+    default: 'Microsoft.VisualStudio.Component.Windows11SDK.22621'
+
+runs:
+  using: composite
+  steps:
+    - name: Install VS 2022 Build Tools (ARM64)
+      shell: pwsh
+      env:
+        WIN_SDK_COMPONENT: ${{ inputs.windows-sdk }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        if (Test-Path -LiteralPath $vswhere) {
+            $existing = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+            if ($existing) {
+                Write-Host "VS Build Tools (VC ARM64) already installed at: $existing"
+                exit 0
+            }
+        }
+
+        $url       = 'https://aka.ms/vs/17/release/vs_buildtools.exe'
+        $installer = Join-Path $env:RUNNER_TEMP 'vs_buildtools.exe'
+        $logDir    = Join-Path $env:RUNNER_TEMP 'vs-install-logs'
+        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+
+        Write-Host "Downloading VS 2022 Build Tools installer ..."
+        Write-Host "  URL: $url"
+        & curl.exe --fail --location --retry 5 --retry-delay 2 --retry-all-errors --silent --show-error --output $installer $url
+        if ($LASTEXITCODE -ne 0) { throw "curl failed (exit $LASTEXITCODE) downloading $url" }
+
+        $components = @(
+            'Microsoft.VisualStudio.Component.VC.Tools.ARM64',
+            $env:WIN_SDK_COMPONENT
+        )
+        $iargs = @(
+            '--quiet', '--wait', '--norestart', '--nocache',
+            '--installPath', 'C:\BuildTools',
+            '--logFilesDirectory', $logDir
+        )
+        foreach ($c in $components) { $iargs += @('--add', $c) }
+
+        Write-Host "Installing VS 2022 Build Tools (~5-10 min)"
+        Write-Host ("  components: " + ($components -join ', '))
+        $start = Get-Date
+        $proc  = Start-Process -FilePath $installer -ArgumentList $iargs -Wait -PassThru -NoNewWindow
+        $mins  = ((Get-Date) - $start).TotalMinutes
+        Write-Host ("Installer finished in {0:N1} min, exit code: {1}" -f $mins, $proc.ExitCode)
+
+        # 0 = success; 3010 = success but reboot pending (we don't reboot CI runners)
+        if ($proc.ExitCode -ne 0 -and $proc.ExitCode -ne 3010) {
+            Write-Host "::group::Last vslogs lines"
+            Get-ChildItem -LiteralPath $logDir -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+                Write-Host "----- $($_.FullName) -----"
+                Get-Content -LiteralPath $_.FullName -Tail 80 -ErrorAction SilentlyContinue
+            }
+            Write-Host "::endgroup::"
+            throw "vs_buildtools.exe failed with exit code $($proc.ExitCode)"
+        }
+
+        if (-not (Test-Path -LiteralPath $vswhere)) {
+            throw "vswhere.exe missing after install (expected at $vswhere)"
+        }
+        $installed = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+        if (-not $installed) {
+            throw "Install completed but VC ARM64 tools not detected by vswhere"
+        }
+        Write-Host "VS Build Tools verified at: $installed"
+        Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
